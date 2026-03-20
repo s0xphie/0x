@@ -1,0 +1,8 @@
+supersingularity/workspace/state_tree/
+supersingularity/workspace/runs/
+supersingularity/workspace/canonical_states/
+__pycache__/
+*.pyc
+.venv/
+venv/
+target/
