@@ -1,3 +1,7 @@
+!README.md
+!.gitignore
+!supersingularity/
+!supersingularity/**
 supersingularity/workspace/state_tree/
 supersingularity/workspace/runs/
 supersingularity/workspace/canonical_states/
