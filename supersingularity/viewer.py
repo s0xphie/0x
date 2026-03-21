@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from argparse import ArgumentParser
 from contextlib import contextmanager
-from dataclasses import dataclass
 from functools import lru_cache
 import json
 from pathlib import Path
@@ -17,15 +16,52 @@ import tty
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from supersingularity.compiled import build_compiled_workspace_index
+    from supersingularity.engine import build_machine_context
+    from supersingularity.expert import ExpertAssessmentRecord
+    from supersingularity.expert import ExpertObservationRecord, ExpertRecommendationRecord
+    from supersingularity.recrystallization import RecrystallizationCandidateRecord, RecrystallizationRecord
+    from supersingularity.dag import (
+        BuildCausalGraphIndexNode,
+        BuildExpertAssessmentNode,
+        BuildHypergraphCandidateIndexNode,
+        BuildInitializationVectorRecordNode,
+        BuildMachineStateRecordNode,
+        BuildMemristorIntegrationNode,
+        BuildMemristorMapNode,
+        BuildOxfoiEvaluationNode,
+        BuildOxfoiEventIndexNode,
+        BuildProductionPointerNode,
+        BuildRecrystallizationNode,
+        BuildStartupEventIndexNode,
+        BuildStartupSequenceNode,
+        CausalGraphIndex,
+        HypergraphCandidateIndex,
+        MachineStateRecord,
+        ProductionPointerRecord,
+        PersistCausalGraphIndexNode,
+        PersistExpertAssessmentNode,
+        PersistHypergraphCandidateIndexNode,
+        PersistMachineStateRecordNode,
+        PersistOxfoiEventIndexNode,
+        PersistRecrystallizationNode,
+        PersistStartupEventIndexNode,
+        StartupMachinePipeline,
+        UpdateEventIndex,
+    )
+    from supersingularity.initialization import (
+        DEFAULT_STARTUP_VECTOR,
+        StartupInitializationVector,
+        StartupSequence,
+    )
     from supersingularity.simulation import (
         BranchPolicy,
-        stabilize_surface,
-        succ,
         generate_successor_subtree_from_stem,
         ImageStateSurface,
         is_archived_state_directory,
         is_archived_state_image,
         list_descendant_leaf_paths,
+        build_canonical_state_index,
+        deduplicate_state_tree,
         load_archived_state_chain,
         read_state_reference,
         review_archived_state_chain,
@@ -34,15 +70,52 @@ if __package__ in {None, ""}:
     )
 else:
     from .compiled import build_compiled_workspace_index
+    from .engine import build_machine_context
+    from .expert import ExpertAssessmentRecord
+    from .expert import ExpertObservationRecord, ExpertRecommendationRecord
+    from .recrystallization import RecrystallizationCandidateRecord, RecrystallizationRecord
+    from .dag import (
+        BuildCausalGraphIndexNode,
+        BuildExpertAssessmentNode,
+        BuildHypergraphCandidateIndexNode,
+        BuildInitializationVectorRecordNode,
+        BuildMachineStateRecordNode,
+        BuildMemristorIntegrationNode,
+        BuildMemristorMapNode,
+        BuildOxfoiEvaluationNode,
+        BuildOxfoiEventIndexNode,
+        BuildProductionPointerNode,
+        BuildRecrystallizationNode,
+        BuildStartupEventIndexNode,
+        BuildStartupSequenceNode,
+        CausalGraphIndex,
+        HypergraphCandidateIndex,
+        MachineStateRecord,
+        ProductionPointerRecord,
+        PersistCausalGraphIndexNode,
+        PersistExpertAssessmentNode,
+        PersistHypergraphCandidateIndexNode,
+        PersistMachineStateRecordNode,
+        PersistOxfoiEventIndexNode,
+        PersistRecrystallizationNode,
+        PersistStartupEventIndexNode,
+        StartupMachinePipeline,
+        UpdateEventIndex,
+    )
+    from .initialization import (
+        DEFAULT_STARTUP_VECTOR,
+        StartupInitializationVector,
+        StartupSequence,
+    )
     from .simulation import (
         BranchPolicy,
-        stabilize_surface,
-        succ,
         generate_successor_subtree_from_stem,
         ImageStateSurface,
         is_archived_state_directory,
         is_archived_state_image,
         list_descendant_leaf_paths,
+        build_canonical_state_index,
+        deduplicate_state_tree,
         load_archived_state_chain,
         read_state_reference,
         review_archived_state_chain,
@@ -55,50 +128,11 @@ ASCII_RAMP = " .:-=+*#%@"
 PACKAGE_ROOT = Path(__file__).resolve().parent
 DEFAULT_STATE_TREE = PACKAGE_ROOT / "workspace" / "state_tree"
 MAX_GROW_LINEAGE_DEPTH = 16
-MEMORY_FOOTER_LINES = 4
+MEMORY_FOOTER_LINES = 6
 MAX_NAV_WALKS = 24
 MAX_LIVE_WALKS = 48
 DEFAULT_VIEW_SHORTLIST = 24
-STARTUP_SEED_PATH = PACKAGE_ROOT / "workspace" / "states" / "sandpile_state.pgm"
-STARTUP_PREFIX = "startup_state"
-STARTUP_CHECKPOINT_INTERVAL = 128
-GLOBAL_RECURSION_LIMIT = 2**32
-
-
-@dataclass(frozen=True)
-class StartupInitializationVector:
-    seed_path: Path
-    prefix: str = "startup_state"
-    global_recursive_limit: int = GLOBAL_RECURSION_LIMIT
-    materialized_recursive_steps: int = 4096
-    checkpoint_interval_steps: int = 128
-
-    @property
-    def persisted_frame_count(self) -> int:
-        return max(1, self.materialized_recursive_steps // max(1, self.checkpoint_interval_steps)) + 1
-
-    @property
-    def recursion_steps_per_frame(self) -> int:
-        return max(1, self.checkpoint_interval_steps)
-
-
-@dataclass
-class StartupSequence:
-    surfaces: list[ImageStateSurface]
-    persisted_paths: list[Path]
-
-    @property
-    def final_path(self) -> Path:
-        return self.persisted_paths[-1]
-
-
-STARTUP_VECTOR = StartupInitializationVector(
-    seed_path=STARTUP_SEED_PATH,
-    prefix=STARTUP_PREFIX,
-    global_recursive_limit=GLOBAL_RECURSION_LIMIT,
-    materialized_recursive_steps=1024,
-    checkpoint_interval_steps=STARTUP_CHECKPOINT_INTERVAL,
-)
+STARTUP_VECTOR = DEFAULT_STARTUP_VECTOR
 
 
 def render_surface_text(
@@ -370,7 +404,17 @@ def default_view_path() -> Path:
     if not root.exists():
         raise FileNotFoundError(str(root))
 
-    candidates = sorted(path for path in root.rglob("*.pgm") if is_archived_state_image(path))
+    candidates = []
+    fallback_candidates = []
+    for path in root.rglob("*.pgm"):
+        if not is_archived_state_image(path):
+            continue
+        fallback_candidates.append(path)
+        parsed = split_state_label(path.stem)
+        if parsed is not None and parsed[0] == "sandpile_state":
+            candidates.append(path)
+    if not candidates:
+        candidates = fallback_candidates
     if not candidates:
         raise FileNotFoundError(f"no archived sandpile states found in {root}")
 
@@ -409,63 +453,244 @@ def default_view_path() -> Path:
     return max(candidates, key=score)
 
 
-def startup_sequence() -> StartupSequence:
+@lru_cache(maxsize=1)
+def startup_machine_context() -> dict[str, object] | None:
     if not STARTUP_VECTOR.seed_path.exists():
+        return None
+    pipeline = StartupMachinePipeline()
+    return pipeline.run(
+        {
+            "initialization_vector": STARTUP_VECTOR,
+            "workspace_root": PACKAGE_ROOT / "workspace",
+        }
+    )
+
+
+def startup_sequence() -> StartupSequence:
+    context = startup_machine_context()
+    if context is None:
         fallback = default_view_path()
         return StartupSequence(
             surfaces=[ImageStateSurface.from_path(fallback)],
             persisted_paths=[fallback],
         )
-    workspace = SimulationWorkspace.create(PACKAGE_ROOT / "workspace")
-    root_surface = ImageStateSurface.from_path(STARTUP_VECTOR.seed_path)
-    for y in range(root_surface.image.height):
-        for x in range(root_surface.image.width):
-            root_surface.write_value(x, y, 0)
-    root_surface.image.max_value = 1
-    root_state = workspace.archive_surface(
-        root_surface,
-        prefix=STARTUP_VECTOR.prefix,
-        topples=0,
-        state_id_override="0x10",
+    return context["startup_sequence"]
+
+
+@lru_cache(maxsize=64)
+def persisted_machine_state_record_for_path(path: str | Path) -> MachineStateRecord | None:
+    resolved = Path(path).resolve()
+    workspace_root = workspace_root_for_path(resolved)
+    runs_root = workspace_root / "runs"
+    if not runs_root.exists():
+        return None
+    current_state_id = cached_archived_state_chain(resolved).stem.state_id
+    exact_match: MachineStateRecord | None = None
+    state_match: MachineStateRecord | None = None
+    manifests = sorted(
+        runs_root.glob("mach_*.json"),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
     )
-    current_surface = root_surface
-    current_state = root_state
-    surfaces = [ImageStateSurface.from_path(root_state.image_path)]
-    archived_paths = [root_state.image_path]
-    steps_per_checkpoint = max(1, STARTUP_VECTOR.recursion_steps_per_frame)
-
-    def next_startup_state_id(counter: int) -> str:
-        if counter >= 0x10:
-            counter += 1
-        return f"0x{counter:02x}"
-
-    checkpoint_counter = 0
-    checkpoint_topples = 0
-    for step_index in range(1, STARTUP_VECTOR.materialized_recursive_steps + 1):
-        current_surface = succ(current_surface, mode="center")
-        current_surface, topples = stabilize_surface(current_surface)
-        checkpoint_topples += topples
-        surfaces.append(current_surface)
-        if step_index % steps_per_checkpoint != 0:
+    for manifest_path in manifests:
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
             continue
-        checkpoint_counter += 1
-        current_state = workspace.archive_surface(
-            current_surface,
-            prefix=STARTUP_VECTOR.prefix,
-            topples=checkpoint_topples,
-            state_id_override=next_startup_state_id(checkpoint_counter),
-            parent=current_state,
-        )
-        archived_paths.append(current_state.image_path)
-        checkpoint_topples = 0
+        manifest_stem_path = data.get("metadata", {}).get("stem_path")
+        manifest_state_id = data.get("current_state_id")
+        record = deserialize_machine_state_record(data)
+        if manifest_stem_path == str(resolved):
+            exact_match = record
+            break
+        if manifest_state_id == current_state_id and state_match is None:
+            state_match = record
+    return exact_match or state_match
 
-    if len(archived_paths) == 1:
-        archived_paths.append(root_state.image_path)
 
-    return StartupSequence(
-        surfaces=surfaces,
-        persisted_paths=archived_paths,
+def deserialize_machine_state_record(data: dict[str, object]) -> MachineStateRecord:
+    payload = dict(data)
+    payload.setdefault("memristor_map_id", None)
+    payload.setdefault("memristor_lattice_family", None)
+    payload.setdefault("memristor_modulated_site_count", 0)
+    payload.setdefault("recrystallization_id", None)
+    payload.setdefault("recrystallized_state_id", None)
+    payload.setdefault("recrystallization_source", None)
+    return MachineStateRecord(**payload)
+
+
+@lru_cache(maxsize=64)
+def persisted_expert_assessment_for_machine(path: str | Path) -> ExpertAssessmentRecord | None:
+    resolved = Path(path).resolve()
+    workspace_root = workspace_root_for_path(resolved)
+    runs_root = workspace_root / "runs"
+    if not runs_root.exists():
+        return None
+    machine = persisted_machine_state_record_for_path(resolved)
+    if machine is None:
+        return None
+    for manifest_path in sorted(runs_root.glob("expert_*.json"), reverse=True):
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if data.get("machine_id") == machine.machine_id:
+            return deserialize_expert_assessment_record(data)
+    return None
+
+
+def deserialize_expert_assessment_record(data: dict[str, object]) -> ExpertAssessmentRecord:
+    payload = dict(data)
+    observations = tuple(ExpertObservationRecord(**record) for record in payload.get("observations", ()))
+    recommendations = tuple(
+        ExpertRecommendationRecord(**record) for record in payload.get("recommendations", ())
     )
+    payload["observations"] = observations
+    payload["recommendations"] = recommendations
+    return ExpertAssessmentRecord(**payload)
+
+
+def deserialize_recrystallization_record(data: dict[str, object]) -> RecrystallizationRecord:
+    payload = dict(data)
+    candidates = tuple(RecrystallizationCandidateRecord(**record) for record in payload.get("candidates", ()))
+    payload["candidates"] = candidates
+    return RecrystallizationRecord(**payload)
+
+
+@lru_cache(maxsize=64)
+def persisted_recrystallization_for_machine(path: str | Path) -> RecrystallizationRecord | None:
+    resolved = Path(path).resolve()
+    workspace_root = workspace_root_for_path(resolved)
+    runs_root = workspace_root / "runs"
+    if not runs_root.exists():
+        return None
+    machine = persisted_machine_state_record_for_path(resolved)
+    if machine is None:
+        return None
+    for manifest_path in sorted(runs_root.glob("recry_*.json"), reverse=True):
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if data.get("machine_id") == machine.machine_id:
+            return deserialize_recrystallization_record(data)
+    return None
+
+
+@lru_cache(maxsize=16)
+def persisted_causal_graph_index_for_workspace(workspace_root: str | Path) -> CausalGraphIndex | None:
+    manifest_path = Path(workspace_root).resolve() / "runs" / "causal_graph_index.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return CausalGraphIndex(**data)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=16)
+def persisted_hypergraph_candidate_index_for_workspace(workspace_root: str | Path) -> HypergraphCandidateIndex | None:
+    manifest_path = Path(workspace_root).resolve() / "runs" / "hypergraph_candidate_index.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return HypergraphCandidateIndex(**data)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=16)
+def persisted_update_event_index_for_workspace(workspace_root: str | Path, manifest_name: str) -> UpdateEventIndex | None:
+    manifest_path = Path(workspace_root).resolve() / "runs" / manifest_name
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return UpdateEventIndex(**data)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=64)
+def persisted_update_event_index_for_manifest(manifest_path: str | Path) -> UpdateEventIndex | None:
+    manifest = Path(manifest_path).resolve()
+    if not manifest.exists():
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        return UpdateEventIndex(**data)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=32)
+def persisted_causal_graph_index_for_manifest(manifest_path: str | Path) -> CausalGraphIndex | None:
+    manifest = Path(manifest_path).resolve()
+    if not manifest.exists():
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        return CausalGraphIndex(**data)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=32)
+def persisted_hypergraph_candidate_index_for_manifest(manifest_path: str | Path) -> HypergraphCandidateIndex | None:
+    manifest = Path(manifest_path).resolve()
+    if not manifest.exists():
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        return HypergraphCandidateIndex(**data)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=64)
+def persisted_production_pointer_for_manifest(manifest_path: str | Path) -> ProductionPointerRecord | None:
+    manifest = Path(manifest_path).resolve()
+    if not manifest.exists():
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        return ProductionPointerRecord(**data)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=16)
+def machine_state_record_for_path(path: str | Path) -> MachineStateRecord:
+    resolved = Path(path).resolve()
+    persisted = persisted_machine_state_record_for_path(resolved)
+    persisted_expert = persisted_expert_assessment_for_machine(resolved)
+    persisted_recrystallization = persisted_recrystallization_for_machine(resolved)
+    if (
+        persisted is not None
+        and machine_state_record_is_complete(persisted)
+        and persisted_expert is not None
+        and persisted_recrystallization is not None
+    ):
+        return persisted
+    workspace_root = workspace_root_for_path(resolved)
+    workspace = SimulationWorkspace.create(workspace_root)
+    context = build_machine_context(resolved, workspace)
+    return context["machine_state_record"]
+
+
+def machine_state_record_is_complete(record: MachineStateRecord) -> bool:
+    metadata = record.metadata or {}
+    required_keys = (
+        "startup_event_manifest_path",
+        "oxfoi_event_manifest_path",
+        "causal_graph_manifest_path",
+        "hypergraph_candidate_manifest_path",
+        "recrystallization_manifest_path",
+        "production_pointer_manifest_path",
+    )
+    return all(bool(metadata.get(key)) for key in required_keys)
 
 
 def startup_chain_paths() -> list[Path]:
@@ -473,7 +698,54 @@ def startup_chain_paths() -> list[Path]:
 
 
 def startup_view_path() -> Path:
-    return startup_sequence().final_path
+    sequence = startup_sequence()
+    return intended_startup_target_path(sequence.final_path)
+
+
+@lru_cache(maxsize=64)
+def resolve_state_id_to_path(workspace_root: str | Path, state_id: str) -> Path | None:
+    if not state_id:
+        return None
+    root = Path(workspace_root).resolve() / "state_tree"
+    if not root.exists():
+        return None
+    candidates = []
+    for path in root.rglob("*.pgm"):
+        if not is_archived_state_image(path):
+            continue
+        parsed = split_state_label(path.stem)
+        if parsed is None:
+            continue
+        if parsed[0] == "sandpile_state" and parsed[1] == state_id:
+            candidates.append(path)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: (len(path.relative_to(root).parts), str(path)))
+
+
+def intended_startup_target_path(path: str | Path) -> Path:
+    resolved = Path(path).resolve()
+    try:
+        machine = machine_state_record_for_path(resolved)
+    except Exception:
+        try:
+            return default_view_path()
+        except Exception:
+            return resolved
+
+    pointer_manifest_path = machine.metadata.get("production_pointer_manifest_path")
+    if pointer_manifest_path:
+        pointer = persisted_production_pointer_for_manifest(pointer_manifest_path)
+        if pointer is not None:
+            preferred_output = pointer.preferred_output or ""
+            preferred_path = resolve_state_id_to_path(workspace_root_for_path(resolved), preferred_output)
+            if preferred_path is not None:
+                return preferred_path
+    try:
+        fallback = default_view_path()
+    except Exception:
+        fallback = resolved
+    return fallback if fallback != resolved else resolved
 
 
 @lru_cache(maxsize=2048)
@@ -551,20 +823,117 @@ def render_memory_footer(path: str | Path, width: int) -> str:
     review = cached_chain_review(path)
     chain = cached_archived_state_chain(path)
     current = chain.stem
+    workspace_root = workspace_root_for_path(path).resolve()
     node_count, leaf_count, max_extra_depth = subtree_stats(path)
     child_count = len(immediate_child_paths(path))
     reference = read_state_reference(current.image_path)
     reference_flag = "ref" if reference is not None else "raw"
     repeat_flag = "rep" if review.steps[-1].repeated_signature else "new"
     try:
-        workspace_line = compiled_workspace_snapshot(str(workspace_root_for_path(path).resolve()))
+        workspace_line = compiled_workspace_snapshot(str(workspace_root))
     except Exception:
         workspace_line = "ws:unavailable"
+    try:
+        machine = machine_state_record_for_path(path)
+        startup_event_index = (
+            persisted_update_event_index_for_manifest(machine.metadata["startup_event_manifest_path"])
+            if machine.metadata.get("startup_event_manifest_path")
+            else None
+        )
+        oxfoi_event_index = (
+            persisted_update_event_index_for_manifest(machine.metadata["oxfoi_event_manifest_path"])
+            if machine.metadata.get("oxfoi_event_manifest_path")
+            else None
+        )
+        triton_event_index = (
+            persisted_update_event_index_for_manifest(machine.metadata["triton_event_manifest_path"])
+            if machine.metadata.get("triton_event_manifest_path")
+            else None
+        )
+        causal_graph = (
+            persisted_causal_graph_index_for_manifest(machine.metadata["causal_graph_manifest_path"])
+            if machine.metadata.get("causal_graph_manifest_path")
+            else None
+        )
+        hypergraph_index = (
+            persisted_hypergraph_candidate_index_for_manifest(machine.metadata["hypergraph_candidate_manifest_path"])
+            if machine.metadata.get("hypergraph_candidate_manifest_path")
+            else None
+        )
+        production_pointer = (
+            persisted_production_pointer_for_manifest(machine.metadata["production_pointer_manifest_path"])
+            if machine.metadata.get("production_pointer_manifest_path")
+            else None
+        )
+        expert_assessment = persisted_expert_assessment_for_machine(path)
+        recrystallization = persisted_recrystallization_for_machine(path)
+        machine_line = (
+            f"mach:{machine.machine_id[:12]} cur:{machine.current_state_id or '-'} "
+            f"ox:{machine.oxfoi_field_domain or '-'}:{machine.oxfoi_instruction_width_words or 0} "
+            f"tc:{machine.target_confidence:.2f}"
+        )
+        align_line = (
+            f"init:{machine.init_origin} ss:{machine.startup_surface_count} "
+            f"sa:{machine.metadata.get('startup_alignment_score', 0)} "
+            f"oa:{machine.metadata.get('oxfoi_alignment_score', 0)}"
+        )
+        if machine.memristor_map_id is not None:
+            align_line = (
+                f"{align_line} mm:{machine.memristor_map_id[:12]} "
+                f"ms:{machine.memristor_modulated_site_count} "
+                f"md:{machine.metadata.get('memristor_loop_density', 0.0):.2f}"
+            )
+        relation_line = (
+            f"cg:{len(causal_graph.records) if causal_graph is not None else '-'} "
+            f"hg:{len(hypergraph_index.records) if hypergraph_index is not None else '-'}"
+        )
+        history_line = (
+            f"se:{len(startup_event_index.records) if startup_event_index is not None else '-'} "
+            f"oe:{len(oxfoi_event_index.records) if oxfoi_event_index is not None else '-'} "
+            f"te:{len(triton_event_index.records) if triton_event_index is not None else '-'}"
+        )
+        pointer_line = (
+            f"pp:{production_pointer.pointer_id[:12]} ray:{production_pointer.ray_id[:12]} "
+            f"nx:{len(production_pointer.next_edge_types)}"
+            if production_pointer is not None
+            else "pp:unavailable"
+        )
+        expert_line = (
+            f"ex:{expert_assessment.recommendations[0].action} "
+            f"pr:{expert_assessment.recommendations[0].priority:.2f}"
+            if expert_assessment is not None and expert_assessment.recommendations
+            else "ex:unavailable"
+        )
+        recrystallization_line = (
+            f"rc:{recrystallization.selected_state_id or '-'} "
+            f"src:{recrystallization.selected_source[:12]} "
+            f"rs:{recrystallization.selected_score:.2f}"
+            if recrystallization is not None
+            else "rc:unavailable"
+        )
+    except Exception:
+        machine_line = "mach:unavailable"
+        align_line = "init:unavailable"
+        relation_line = (
+            f"cg:{len(persisted_causal_graph_index_for_workspace(workspace_root).records) if persisted_causal_graph_index_for_workspace(workspace_root) is not None else '-'} "
+            f"hg:{len(persisted_hypergraph_candidate_index_for_workspace(workspace_root).records) if persisted_hypergraph_candidate_index_for_workspace(workspace_root) is not None else '-'}"
+        )
+        history_line = (
+            f"se:{len(persisted_update_event_index_for_workspace(workspace_root, 'startup_event_index.json').records) if persisted_update_event_index_for_workspace(workspace_root, 'startup_event_index.json') is not None else '-'} "
+            f"oe:{len(persisted_update_event_index_for_workspace(workspace_root, 'oxfoi_event_index.json').records) if persisted_update_event_index_for_workspace(workspace_root, 'oxfoi_event_index.json') is not None else '-'} "
+            f"te:{len(persisted_update_event_index_for_workspace(workspace_root, 'triton_oxfoi_event_index.json').records) if persisted_update_event_index_for_workspace(workspace_root, 'triton_oxfoi_event_index.json') is not None else '-'}"
+        )
+        pointer_line = "pp:unavailable"
+        expert_line = "ex:unavailable"
+        recrystallization_line = "rc:unavailable"
     lines = [
         f"m:{current.state_id} d:{current.lineage_depth} ch:{child_count} lf:{leaf_count} sub:{node_count} mx:{max_extra_depth}",
-        f"lin:{compact_chain_labels(path)}",
-        f"mem:{reference_flag} {repeat_flag} sig:{current.signature[:14]}",
-        workspace_line,
+        machine_line,
+        align_line,
+        pointer_line,
+        expert_line,
+        recrystallization_line,
+        f"mem:{reference_flag} {repeat_flag} sig:{current.signature[:14]} {relation_line} {history_line} {workspace_line}",
     ]
     return "\n".join(line.ljust(width)[:width] for line in lines)
 
@@ -734,6 +1103,17 @@ def invalidate_view_caches(path: str | Path | None = None) -> None:
     surface_dimensions.cache_clear()
     walk_priority_metrics.cache_clear()
     production_pointer_guidance.cache_clear()
+    machine_state_record_for_path.cache_clear()
+    persisted_machine_state_record_for_path.cache_clear()
+    persisted_expert_assessment_for_machine.cache_clear()
+    persisted_recrystallization_for_machine.cache_clear()
+    persisted_causal_graph_index_for_workspace.cache_clear()
+    persisted_hypergraph_candidate_index_for_workspace.cache_clear()
+    persisted_update_event_index_for_workspace.cache_clear()
+    persisted_update_event_index_for_manifest.cache_clear()
+    persisted_causal_graph_index_for_manifest.cache_clear()
+    persisted_hypergraph_candidate_index_for_manifest.cache_clear()
+    persisted_production_pointer_for_manifest.cache_clear()
     if path is None:
         compiled_workspace_snapshot.cache_clear()
         return
@@ -867,7 +1247,6 @@ def animate_auto_walk(
     delay: float = 0.2,
     dwell: float = 0.6,
     repeat: int = 0,
-    interactive: bool = True,
     startup_paths: list[Path] | None = None,
 ) -> None:
     current_path = Path(path)
@@ -899,22 +1278,6 @@ def animate_auto_walk(
                     sleep(delay)
                 sleep(dwell)
             current_path = last_leaf_path
-            if interactive and sys.stdin.isatty():
-                action = prompt_action(
-                    last_frame,
-                    "[Enter] continue  [g] grow from current leaf  [q] quit: ",
-                )
-                if action in {"q", "quit", "x"}:
-                    break
-                if action == "g":
-                    grown, skipped = grow_from_view_path(current_path)
-                    notice = (
-                        f"{last_frame.rstrip()}\n\n"
-                        f"+{grown} states"
-                        f"{'  skipped ' + str(skipped) + ' capped branch(es)' if skipped else ''}\n"
-                    )
-                    redraw_frame(notice)
-                    sleep(max(dwell, 0.4))
             iteration += 1
 
 
@@ -1011,8 +1374,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--growth-interval", type=int, default=1)
     parser.add_argument("--growth-breadth", type=int, default=2)
     parser.add_argument("--sweep", action="store_true")
-    parser.add_argument("--interactive", action="store_true")
-    parser.add_argument("--no-interactive", action="store_true")
     args = parser.parse_args(argv)
     startup_paths: list[Path] | None = None
     startup_surfaces: list[ImageStateSurface] | None = None
@@ -1022,9 +1383,8 @@ def main(argv: list[str] | None = None) -> int:
         sequence = startup_sequence()
         startup_paths = sequence.persisted_paths
         startup_surfaces = sequence.surfaces
-        path = str(sequence.final_path)
+        path = str(startup_view_path())
     repeat = 0 if args.loop else args.repeat
-    interactive = args.interactive or (args.mode == "auto" and not args.no_interactive)
 
     if args.mode == "chain":
         animate_chain(path, delay=args.delay, repeat=repeat)
@@ -1054,7 +1414,6 @@ def main(argv: list[str] | None = None) -> int:
             delay=args.delay,
             dwell=args.dwell,
             repeat=repeat,
-            interactive=interactive,
             startup_paths=startup_paths,
         )
     return 0
