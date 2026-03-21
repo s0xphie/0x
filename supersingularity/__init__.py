@@ -1,10 +1,17 @@
 """Core package for supersingular graph, sandpile, and image-backed simulations."""
 
+from .compiled import (
+    build_compiled_workspace_index,
+    CompiledCarrierCapacity,
+    CompiledWorkspaceIndex,
+    inspect_compiled_ternlsb_capacity,
+)
 from .dag import (
     AddGrainNode,
     ApplyTernLSBProgramNode,
     BuildCanonicalStateIndexNode,
     BuildCausalGraphIndexNode,
+    BuildCompiledWorkspaceIndexNode,
     BuildHypergraphCandidateIndexNode,
     BuildProductionPointerNode,
     BuildStegoCycleEventIndexNode,
@@ -16,6 +23,7 @@ from .dag import (
     DeduplicateStateTreeNode,
     DagNode,
     DecodeTernLSBNode,
+    DescribeTernLSBProgramNode,
     EmitOntologyRecordNode,
     EncodeTernLSBNode,
     ExtractSandpileFeaturesNode,
@@ -36,6 +44,22 @@ from .dag import (
     UpdateEventIndex,
     UpdateEventRecord,
 )
+from .eisenstein import (
+    axial_distance,
+    build_lattice_order as build_eisenstein_lattice_order,
+    centered_configuration as centered_eisenstein_configuration,
+    configuration_from_program_text as eisenstein_configuration_from_program_text,
+    configuration_from_site_map as eisenstein_configuration_from_site_map,
+    config_from_points as eisenstein_config_from_points,
+    config_from_sites as eisenstein_config_from_sites,
+    corner_sites as eisenstein_corner_sites,
+    corner_wedge_config as eisenstein_corner_wedge_config,
+    EISENSTEIN_NEIGHBOR_OFFSETS,
+    eisenstein_vertex,
+    expand_program_phase as expand_eisenstein_program_phase,
+    make_eisenstein_graph,
+    parse_program_string as parse_eisenstein_program_string,
+)
 from .graph import (
     add_chip,
     configuration_signature,
@@ -52,6 +76,7 @@ from .graph import (
     UndirectedGraph,
 )
 from .netpbm import NetpbmImage, read_netpbm, write_netpbm
+from .programs import ProgramCatalog, ProgramDescription, describe_ternlsb_execution
 from .regular import centered_configuration, make_grid_graph
 from .simulation import (
     ArchivedState,
@@ -90,6 +115,7 @@ from .simulation import (
     surface_state_id,
     surface_signature,
 )
+from .selfcheck import run_selfcheck, SelfCheckReport
 from .supersingular import (
     build_supersingular_isogeny_graph,
     estimate_supersingular_vertex_count,
@@ -114,9 +140,11 @@ __all__ = [
     "animate_auto_walk",
     "animate_chain",
     "animate_leaf_walk",
+    "axial_distance",
     "BranchPolicy",
     "BuildCanonicalStateIndexNode",
     "BuildCausalGraphIndexNode",
+    "BuildCompiledWorkspaceIndexNode",
     "BuildHypergraphCandidateIndexNode",
     "BuildProductionPointerNode",
     "BuildStegoCycleEventIndexNode",
@@ -133,12 +161,16 @@ __all__ = [
     "CausalDependencyRecord",
     "CausalGraphIndex",
     "clone_surface",
+    "CompiledCarrierCapacity",
+    "CompiledWorkspaceIndex",
     "configuration_signature",
+    "build_compiled_workspace_index",
     "Dag",
     "DagContext",
     "DeduplicateStateTreeNode",
     "DagNode",
     "DecodeTernLSBNode",
+    "DescribeTernLSBProgramNode",
     "Edge",
     "EncodeTernLSBNode",
     "EmitOntologyRecordNode",
@@ -149,7 +181,10 @@ __all__ = [
     "GraphToSandpilePipeline",
     "HyperedgeCandidateRecord",
     "HypergraphCandidateIndex",
+    "inspect_compiled_ternlsb_capacity",
     "ProductionPointerRecord",
+    "ProgramCatalog",
+    "ProgramDescription",
     "DedupeSummary",
     "deduplicate_state_tree",
     "generate_successor_subtree_from_stem",
@@ -174,10 +209,12 @@ __all__ = [
     "review_archived_state_chain",
     "ReviewArchivedStateChainNode",
     "centered_configuration",
+    "centered_eisenstein_configuration",
     "SandpileConfiguration",
     "SandpileGroupInvariant",
     "SandpileModel",
     "SimulationWorkspace",
+    "SelfCheckReport",
     "StegoSandpileCyclePipeline",
     "summarize_archived_tree",
     "sandpile_features",
@@ -200,16 +237,30 @@ __all__ = [
     "UpdateEventRecord",
     "RewriteRule",
     "apply_ternlsb_program",
+    "describe_ternlsb_execution",
     "decode_ternlsb_program",
     "encode_ternlsb_program",
+    "EISENSTEIN_NEIGHBOR_OFFSETS",
+    "eisenstein_config_from_points",
+    "eisenstein_config_from_sites",
+    "eisenstein_configuration_from_program_text",
+    "eisenstein_configuration_from_site_map",
+    "eisenstein_corner_sites",
+    "eisenstein_corner_wedge_config",
+    "eisenstein_vertex",
+    "expand_eisenstein_program_phase",
+    "make_eisenstein_graph",
     "make_grid_graph",
+    "parse_eisenstein_program_string",
     "read_netpbm",
     "generate_successor_chain",
     "generate_successor_tree",
     "initialize_identity_surface",
     "surface_signature",
+    "run_selfcheck",
     "stabilize_surface",
     "ternlsb_capacity",
+    "build_eisenstein_lattice_order",
     "write_netpbm",
 ]
 

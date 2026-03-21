@@ -4,6 +4,11 @@
 **Status:** Archive + Network Service Ready  
 **Scope:** PDF ingestion, analysis, artifact detection, and progress journaling
 
+Scope note
+
+- The repository now also contains `supersingularity/`, a graph/sandpile/DAG/hypergraph package with its own scoped semantics.
+- When work needs to relate the wider repository to `supersingularity`, start with `CODELETTERIA_SCOPE.md` and then `supersingularity/SCOPE.md`.
+
 ---
 
 ## What is This?

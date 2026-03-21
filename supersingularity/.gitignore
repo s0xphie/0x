@@ -1,5 +1,6 @@
-supersingularity/workspace/state_tree/
-supersingularity/workspace/runs/
-supersingularity/workspace/canonical_states/
+workspace/state_tree/
+workspace/runs/
+workspace/canonical_states/
+workspace/__pycache__/
 __pycache__/
 *.pyc

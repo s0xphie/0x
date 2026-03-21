@@ -16,6 +16,10 @@ Core claim
 
 The package should evolve toward a graph-native sandpile and rewrite system whose higher-order relations can eventually be compiled into a hypergraph. The regular grid case is the calibration space. The supersingular isogeny case is the intended mathematical target.
 
+Control-flow claim
+
+Python currently owns semantic control flow, production-pointer scope, and orchestration. Compiled helpers may accelerate specific subroutines, but they should remain subordinate to Python-defined scope and theory alignment.
+
 Theory to preserve
 
 - Supersingular isogeny graphs are graph objects, not image objects.
@@ -35,6 +39,8 @@ Module alignment
   Owns state persistence, recursive generation, dedupe, canonical-state indexing, and rewrite-rule execution over stored surfaces.
 - `dag.py`
   Owns typed derivations, ontology records, hypergraph candidates, and production pointers.
+- `compiled.py`
+  Owns Python-controlled access to compiled helpers for indexing and carrier inspection.
 - `netpbm.py`
   Owns image parsing and serialization only.
 - `viewer.py`
@@ -44,12 +50,18 @@ Important current gap
 
 The recursive `.pgm` machinery is more operational than the supersingular-isogeny implementation. The DAG and production-pointer work should be treated as the bridge that keeps the current regular-grid experiments aligned with the eventual supersingular target.
 
+Repo alignment
+
+- The wider `Codeletteria/` repository may contain relevant tools, Rust helpers, dashboards, and theory materials.
+- Those resources are aligned with `supersingularity` only when they remain subordinate to the package’s production-pointer-guided semantic scope.
+
 Near-term interpretation
 
 - Regular Abelian sandpile runs are executable probes.
 - Canonical-state collapse is a quotient view over those probes.
 - Hypergraph candidates are provisional higher-order relations.
 - Production pointers are bounded continuation artifacts.
+- Compiled helpers are acceleration seams, not independent semantic runtimes.
 
 Long-term interpretation
 

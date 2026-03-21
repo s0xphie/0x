@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from .compiled import CompiledWorkspaceIndex, build_compiled_workspace_index
 from .graph import (
     add_chip,
     configuration_signature,
@@ -32,6 +33,7 @@ from .simulation import (
     surface_signature,
     summarize_archived_tree,
 )
+from .programs import ProgramDescription, describe_ternlsb_execution
 from .ternlsb import (
     apply_ternlsb_program,
     decode_ternlsb_program,
@@ -560,6 +562,30 @@ class EncodeTernLSBNode(DagNode):
 
 
 @dataclass
+class DescribeTernLSBProgramNode(DagNode):
+    def __init__(
+        self,
+        program_key: str = "decoded_ternlsb_program",
+        execution_key: str = "ternlsb_execution",
+        output_key: str = "ternlsb_program_description",
+    ):
+        super().__init__(
+            name="describe_ternlsb_program",
+            inputs=[program_key, execution_key],
+            outputs=[output_key],
+        )
+        self.program_key = program_key
+        self.execution_key = execution_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        program: TernLSBProgram = context[self.program_key]
+        execution: TernLSBExecutionRecord = context[self.execution_key]
+        description = describe_ternlsb_execution(program, execution)
+        return {self.output_key: description}
+
+
+@dataclass
 class BuildStegoCycleEventIndexNode(DagNode):
     def __init__(
         self,
@@ -762,6 +788,31 @@ class BuildCanonicalStateIndexNode(DagNode):
     def run(self, context: DagContext) -> DagContext:
         workspace: SimulationWorkspace = context[self.workspace_key]
         index = build_canonical_state_index(workspace.root)
+        return {self.output_key: index}
+
+
+@dataclass
+class BuildCompiledWorkspaceIndexNode(DagNode):
+    def __init__(
+        self,
+        workspace_key: str = "workspace",
+        output_key: str = "compiled_workspace_index",
+        enabled_key: str = "use_compiled_workspace_index",
+    ):
+        super().__init__(
+            name="build_compiled_workspace_index",
+            inputs=[workspace_key],
+            outputs=[output_key],
+        )
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+        self.enabled_key = enabled_key
+
+    def run(self, context: DagContext) -> DagContext:
+        if not bool(context.get(self.enabled_key, True)):
+            return {}
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        index: CompiledWorkspaceIndex = build_compiled_workspace_index(workspace.root)
         return {self.output_key: index}
 
 
@@ -1227,6 +1278,7 @@ class StegoSandpileCyclePipeline(Dag):
             nodes=[
                 DecodeTernLSBNode(),
                 ApplyTernLSBProgramNode(),
+                DescribeTernLSBProgramNode(),
                 ProjectConfigurationToImageNode(
                     configuration_key="ternlsb_configuration",
                     output_key="cycle_surface",

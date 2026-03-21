@@ -2,6 +2,13 @@ Supersingularity Scope
 
 Use this file when an agent is asked to "scope the singularity" or re-scope the `supersingularity` repo.
 
+Outer context
+
+- `supersingularity/` is the primary working package.
+- The wider `Codeletteria/` directory is relevant context when it supports `supersingularity` semantics, compiled helpers, theory references, or production tooling.
+- Scope expansion into the wider repository is allowed only when it still aligns with the current production-pointer and does not displace Python as the semantic control layer.
+- When expanding outward intentionally, read `../CODELETTERIA_SCOPE.md` before acting.
+
 Startup reading order
 
 1. `README.md`
@@ -9,6 +16,19 @@ Startup reading order
 3. `ARCHITECTURE.md`
 4. `ROADMAP.md`
 5. `INVARIANTS.md`
+
+Expanded reading order when widening scope into `Codeletteria/`
+
+1. `../CODELETTERIA_SCOPE.md`
+2. `../README.md`
+3. `../QUICKSTART.md`
+4. `../DASHBOARD_README.md`
+5. `../RUST_PROGRAM.md`
+6. `README.md`
+7. `ALIGNMENT.md`
+8. `ARCHITECTURE.md`
+9. `ROADMAP.md`
+10. `INVARIANTS.md`
 
 Then inspect the current implementation in this order
 
@@ -27,6 +47,8 @@ What to understand first
 - `.pgm` files are storage and projection substrates, not the primary mathematics.
 - The DAG is the typed derivation layer.
 - Hypergraph candidates and production pointers are provisional higher-order structures.
+- Python currently owns scope, production-pointer logic, and semantic control flow.
+- Compiled helpers may accelerate subroutines, but they remain subordinate to Python-directed scope.
 
 Current repo interpretation
 
@@ -35,6 +57,7 @@ Current repo interpretation
 - `simulation.py` owns recursive state generation, dedupe, canonical-state indexing, and stored-memory operations.
 - `viewer.py` owns terminal traversal and visual intuition.
 - `supersingular.py` is currently a scaffold entry point for the supersingular-isogeny graph family, not a final mathematical implementation.
+- `compiled.py` owns Python-controlled access to compiled acceleration helpers.
 
 Theory anchors
 
@@ -45,9 +68,16 @@ Theory anchors
 What an agent should summarize before making changes
 
 - The current role of `graph.py`, `dag.py`, `simulation.py`, `viewer.py`, and `supersingular.py`
+- The current role of `compiled.py` and any Rust helper binaries it calls
 - The current state of `workspace/state_tree`, `workspace/canonical_states`, and `workspace/runs`
 - The current production-pointer and hypergraph-candidate behavior
 - The gap between the regular calibration path and the supersingular target
+- The relation between the current state of `supersingularity/` and the wider `Codeletteria/` repository, if scope expansion is being considered
+
+Continuity rule
+
+- The initial commit should be treated as a projected reference state of the original model/data/config relation.
+- Later work should refine, extend, and accelerate that projection rather than erase it.
 
 Important constraint
 

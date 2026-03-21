@@ -70,6 +70,30 @@ class ImageStateSurface:
         return start_x, start_y
 
 
+def split_state_label(label: str) -> tuple[str, str] | None:
+    marker = label.find("0x")
+    if marker <= 0:
+        return None
+    prefix = label[:marker]
+    state_id = label[marker:]
+    if not prefix or not state_id.startswith("0x"):
+        return None
+    return prefix, state_id
+
+
+def is_archived_state_directory(path: str | Path) -> bool:
+    return split_state_label(Path(path).name) is not None
+
+
+def is_archived_state_image(path: str | Path) -> bool:
+    image_path = Path(path)
+    if image_path.suffix != ".pgm":
+        return False
+    if image_path.stem != image_path.parent.name:
+        return False
+    return is_archived_state_directory(image_path.parent)
+
+
 class RewriteRule(Protocol):
     name: str
 
@@ -776,7 +800,7 @@ def deduplicate_state_tree(workspace_root: str | Path) -> DedupeSummary:
     canonical_by_signature: dict[str, Path] = {}
     references: list[StateReference] = []
 
-    for image_path in sorted(state_tree_root.rglob("sandpile_state*.pgm")):
+    for image_path in sorted(path for path in state_tree_root.rglob("*.pgm") if is_archived_state_image(path)):
         if reference_path_for_image(image_path).exists():
             continue
         surface = ImageStateSurface.from_path(image_path)
@@ -810,12 +834,15 @@ def build_canonical_state_index(workspace_root: str | Path) -> CanonicalStateInd
     state_tree_root = workspace.root / "state_tree"
     aggregates: dict[Path, dict[str, object]] = {}
 
-    for image_path in sorted(state_tree_root.rglob("sandpile_state*.pgm")):
+    for image_path in sorted(path for path in state_tree_root.rglob("*.pgm") if is_archived_state_image(path)):
         resolved_path = resolve_state_image_path(image_path).resolve()
         surface = ImageStateSurface.from_path(image_path)
         signature = surface_signature(surface)
         state_label = image_path.stem
-        state_id = state_label.removeprefix("sandpile_state")
+        parsed = split_state_label(state_label)
+        if parsed is None:
+            continue
+        _, state_id = parsed
         lineage_depth = max(0, len(image_path.relative_to(state_tree_root).parts) - 2)
         reference = read_state_reference(image_path)
 
@@ -847,7 +874,7 @@ def build_canonical_state_index(workspace_root: str | Path) -> CanonicalStateInd
             cast_samples.append(str(image_path))
 
         parent_dir = image_path.parent.parent
-        if parent_dir.name.startswith("sandpile_state"):
+        if is_archived_state_directory(parent_dir):
             parent_image = parent_dir / f"{parent_dir.name}.pgm"
             if parent_image.exists():
                 parent_resolved = resolve_state_image_path(parent_image).resolve()
@@ -909,18 +936,20 @@ def load_archived_state_chain(path: str | Path) -> ArchivedStateChain:
     while True:
         state_dir = current_image.parent
         state_label = state_dir.name
-        if not state_label.startswith("sandpile_state"):
+        parsed = split_state_label(state_label)
+        if parsed is None:
             break
 
         branch_parts: list[str] = []
         probe = state_dir.parent
-        while probe.name and not probe.name.startswith("sandpile_state") and probe.name != "state_tree":
+        while probe.name and not is_archived_state_directory(probe) and probe.name != "state_tree":
             branch_parts.append(probe.name)
             probe = probe.parent
         branch = tuple(reversed(branch_parts))
 
         surface = ImageStateSurface.from_path(current_image)
-        state_id = state_label.removeprefix("sandpile_state")
+        _, state_id = parsed
+        parent_parsed = split_state_label(probe.name)
         states.append(
             ArchivedState(
                 state_id=state_id,
@@ -929,12 +958,12 @@ def load_archived_state_chain(path: str | Path) -> ArchivedStateChain:
                 directory=state_dir,
                 image_path=current_image,
                 topples=0,
-                parent_state_id=probe.name.removeprefix("sandpile_state") if probe.name.startswith("sandpile_state") else None,
+                parent_state_id=parent_parsed[1] if parent_parsed is not None else None,
                 lineage_depth=lineage_depth,
             )
         )
 
-        if probe.name == "state_tree" or not probe.name.startswith("sandpile_state"):
+        if probe.name == "state_tree" or not is_archived_state_directory(probe):
             break
 
         parent_image = probe / f"{probe.name}.pgm"
@@ -963,11 +992,11 @@ def load_archived_state_chain(path: str | Path) -> ArchivedStateChain:
 def list_descendant_leaf_paths(path: str | Path) -> list[Path]:
     chain = load_archived_state_chain(path)
     stem_directory = chain.stem.directory
-    all_images = sorted(stem_directory.rglob("sandpile_state*.pgm"))
+    all_images = sorted(image for image in stem_directory.rglob("*.pgm") if is_archived_state_image(image))
     leaves: list[Path] = []
     for image_path in all_images:
         state_dir = image_path.parent
-        has_child_states = any(child.is_dir() and child.name.startswith("sandpile_state") for child in state_dir.iterdir())
+        has_child_states = any(child.is_dir() and is_archived_state_directory(child) for child in state_dir.iterdir())
         if not has_child_states:
             leaves.append(image_path)
     return leaves

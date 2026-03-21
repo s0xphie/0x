@@ -2,11 +2,27 @@
 !.gitignore
 !supersingularity/
 !supersingularity/**
+
+# Editor / local operator state
+.vscode/
+archive_progress.json
+archive_progress.pdf
+eisenstein_live_expert_index.json
+pygame/archive_progress.json
+pygame/archive_progress.pdf
+pygame/eisenstein_live_expert_index.json
+
+# Python caches
 supersingularity/workspace/state_tree/
 supersingularity/workspace/runs/
 supersingularity/workspace/canonical_states/
+supersingularity/__pycache__/
+supersingularity/workspace/__pycache__/
+pygame/__pycache__/
 __pycache__/
 *.pyc
+
+# Local runtimes
 .venv/
 venv/
 target/
