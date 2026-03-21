@@ -7,6 +7,9 @@ Scope first
 - If an agent is asked to "scope the singularity", start with `SCOPE.md`.
 - The main design documents are:
   - `SCOPE.md`
+  - `CRYSTALLIZATION.md`
+  - `MACHINE.md`
+  - `UNIVERSAL_ARGUMENT.md`
   - `ALIGNMENT.md`
   - `ARCHITECTURE.md`
   - `ROADMAP.md`

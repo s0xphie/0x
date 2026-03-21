@@ -12,10 +12,13 @@ Outer context
 Startup reading order
 
 1. `README.md`
-2. `ALIGNMENT.md`
-3. `ARCHITECTURE.md`
-4. `ROADMAP.md`
-5. `INVARIANTS.md`
+2. `CRYSTALLIZATION.md`
+3. `MACHINE.md`
+4. `UNIVERSAL_ARGUMENT.md`
+5. `ALIGNMENT.md`
+6. `ARCHITECTURE.md`
+7. `ROADMAP.md`
+8. `INVARIANTS.md`
 
 Expanded reading order when widening scope into `Codeletteria/`
 
@@ -25,10 +28,13 @@ Expanded reading order when widening scope into `Codeletteria/`
 4. `../DASHBOARD_README.md`
 5. `../RUST_PROGRAM.md`
 6. `README.md`
-7. `ALIGNMENT.md`
-8. `ARCHITECTURE.md`
-9. `ROADMAP.md`
-10. `INVARIANTS.md`
+7. `CRYSTALLIZATION.md`
+8. `MACHINE.md`
+9. `UNIVERSAL_ARGUMENT.md`
+10. `ALIGNMENT.md`
+11. `ARCHITECTURE.md`
+12. `ROADMAP.md`
+13. `INVARIANTS.md`
 
 Then inspect the current implementation in this order
 

@@ -8,6 +8,7 @@ Semantic invariants
 
 - Graph semantics dominate image semantics.
 - Python-directed semantic control currently dominates compiled acceleration helpers.
+- Local state uniqueness is provisional; stable relation classes are more important than naive one-off distinctness.
 - A sink is part of the sandpile model, not optional metadata.
 - Reduced Laplacian conventions must remain explicit.
 - Edge multiplicity and degree must not be discarded.
@@ -43,8 +44,10 @@ Supersingular target invariants
 
 - The long-term target is sandpile / critical-group structure on supersingular isogeny graphs.
 - Regular grids are calibration cases, not final semantics.
+- The code should preserve the possibility that what appears non-unique in the Abelian sandpile stabilization game becomes uniquely meaningful only through ordered relation, recurrence, and collapse structure.
 - The code must not conflate image adjacency with isogeny adjacency.
 - The theory PDFs constrain the architecture even when the implementation is incomplete.
+- Any future universal self-distinguishing or diagonal-like layer should be modeled through Oxfoi invariance and supersingular/isogeny relation geometry, not reduced to a flat enumeration metaphor that erases those structures.
 
 Oxfoi and Triton VM invariants
 

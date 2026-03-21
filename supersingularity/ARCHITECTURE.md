@@ -3,7 +3,7 @@ Supersingularity Architecture
 Agent startup
 
 - For future scoping, start with `SCOPE.md`.
-- Treat `README.md`, `ALIGNMENT.md`, `ROADMAP.md`, and `INVARIANTS.md` as the core context surface.
+- Treat `README.md`, `CRYSTALLIZATION.md`, `MACHINE.md`, `ALIGNMENT.md`, `ROADMAP.md`, and `INVARIANTS.md` as the core context surface.
 - Treat the wider `Codeletteria/` repository as supporting context, not the default semantic center.
 
 Package layers
