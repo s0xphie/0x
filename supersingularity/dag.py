@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .compiled import CompiledWorkspaceIndex, build_compiled_workspace_index
+from .expert import build_expert_assessment, ExpertAssessmentRecord
 from .graph import (
     add_chip,
     configuration_signature,
@@ -18,6 +19,25 @@ from .graph import (
     stabilize_configuration,
     StabilizationResult,
     UndirectedGraph,
+)
+from .initialization import build_startup_sequence, StartupInitializationVector, StartupSequence
+from .memristor import (
+    build_memristor_map,
+    integrate_ternlsb_into_memristor_map,
+    MemristorIntegrationRecord,
+    MemristorMapRecord,
+)
+from .recrystallization import build_recrystallization, RecrystallizationRecord
+from .oxfoi import (
+    build_oxfoi_expression,
+    build_triton_instruction,
+    build_triton_state,
+    execute_triton_instruction,
+    evaluate_oxfoi_expression,
+    OxfoiEvaluationRecord,
+    OxfoiExpressionRecord,
+    TritonOxfoiExecutionRecord,
+    TritonOxfoiInstructionRecord,
 )
 from .simulation import ArchivedState, ImageStateSurface, SimulationWorkspace
 from .simulation import (
@@ -133,6 +153,46 @@ class ProductionPointerRecord:
     preferred_output: str | None
     safety_bounds: dict[str, Any]
     target_domain: str
+    target_confidence: float
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class InitializationVectorRecord:
+    seed_path: str
+    prefix: str
+    global_recursive_limit: int
+    materialized_recursive_steps: int
+    checkpoint_interval_steps: int
+    persisted_checkpoint_count: int
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class MachineStateRecord:
+    machine_id: str
+    init_origin: str
+    current_state_id: str | None
+    startup_surface_count: int
+    startup_checkpoint_count: int
+    startup_event_count: int
+    oxfoi_expression_id: str | None
+    oxfoi_transition_id: str | None
+    oxfoi_field_domain: str | None
+    oxfoi_instruction_width_words: int | None
+    memristor_map_id: str | None
+    memristor_lattice_family: str | None
+    memristor_modulated_site_count: int
+    triton_instruction_id: str | None
+    triton_instruction_kind: str | None
+    triton_instruction_width_words: int | None
+    triton_field_domain: str | None
+    triton_state_id: str | None
+    recrystallization_id: str | None
+    recrystallized_state_id: str | None
+    recrystallization_source: str | None
+    production_pointer_id: str | None
+    target_domain: str | None
     target_confidence: float
     metadata: dict[str, Any]
 
@@ -449,6 +509,702 @@ class EmitOntologyRecordNode(DagNode):
             "features": features,
         }
         return {self.output_key: record}
+
+
+@dataclass
+class BuildInitializationVectorRecordNode(DagNode):
+    def __init__(
+        self,
+        vector_key: str = "initialization_vector",
+        output_key: str = "initialization_vector_record",
+    ):
+        super().__init__(
+            name="build_initialization_vector_record",
+            inputs=[vector_key],
+            outputs=[output_key],
+        )
+        self.vector_key = vector_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        vector: StartupInitializationVector = context[self.vector_key]
+        record = InitializationVectorRecord(
+            seed_path=str(vector.seed_path),
+            prefix=vector.prefix,
+            global_recursive_limit=int(vector.global_recursive_limit),
+            materialized_recursive_steps=int(vector.materialized_recursive_steps),
+            checkpoint_interval_steps=int(vector.checkpoint_interval_steps),
+            persisted_checkpoint_count=int(vector.persisted_frame_count),
+            metadata={
+                "recursion_steps_per_checkpoint": int(vector.recursion_steps_per_frame),
+            },
+        )
+        return {self.output_key: record}
+
+
+@dataclass
+class BuildStartupSequenceNode(DagNode):
+    def __init__(
+        self,
+        initialization_vector_key: str = "initialization_vector",
+        workspace_root_key: str = "workspace_root",
+        output_key: str = "startup_sequence",
+    ):
+        super().__init__(
+            name="build_startup_sequence",
+            inputs=[initialization_vector_key],
+            outputs=[output_key],
+        )
+        self.initialization_vector_key = initialization_vector_key
+        self.workspace_root_key = workspace_root_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        vector: StartupInitializationVector = context[self.initialization_vector_key]
+        workspace_root = context.get(self.workspace_root_key)
+        if workspace_root is None:
+            workspace = context.get("workspace")
+            if workspace is not None:
+                workspace_root = getattr(workspace, "root", None)
+        sequence = build_startup_sequence(
+            vector=vector,
+            workspace_root=workspace_root,
+        )
+        return {self.output_key: sequence}
+
+
+@dataclass
+class BuildOxfoiEvaluationNode(DagNode):
+    def __init__(
+        self,
+        initialization_record_key: str = "initialization_vector_record",
+        expression_key: str = "oxfoi_expression",
+        output_key: str = "oxfoi_evaluation",
+        pointer_key: str = "production_pointer",
+        payload_key: str = "oxfoi_expression_payload",
+        field_domain_key: str = "oxfoi_field_domain",
+        instruction_width_key: str = "oxfoi_instruction_width_words",
+        single_use_key: str = "oxfoi_single_use",
+    ):
+        super().__init__(
+            name="build_oxfoi_evaluation",
+            inputs=[initialization_record_key],
+            outputs=[output_key, expression_key],
+        )
+        self.initialization_record_key = initialization_record_key
+        self.expression_key = expression_key
+        self.output_key = output_key
+        self.pointer_key = pointer_key
+        self.payload_key = payload_key
+        self.field_domain_key = field_domain_key
+        self.instruction_width_key = instruction_width_key
+        self.single_use_key = single_use_key
+
+    def run(self, context: DagContext) -> DagContext:
+        initialization_record: InitializationVectorRecord = context[self.initialization_record_key]
+        expression = context.get(self.expression_key)
+        if expression is None:
+            expression = build_oxfoi_expression(
+                str(context.get(self.payload_key, "init.single_use")),
+                field_domain=str(context.get(self.field_domain_key, "B")),
+                instruction_width_words=int(context.get(self.instruction_width_key, 1)),
+                single_use=bool(context.get(self.single_use_key, True)),
+            )
+        pointer: ProductionPointerRecord | None = context.get(self.pointer_key)
+        evaluation = evaluate_oxfoi_expression(
+            initialization_record,
+            expression,
+            pointer=pointer,
+        )
+        return {
+            self.expression_key: expression,
+            self.output_key: evaluation,
+        }
+
+
+@dataclass
+class BuildTritonOxfoiExecutionNode(DagNode):
+    def __init__(
+        self,
+        initialization_record_key: str = "initialization_vector_record",
+        instruction_key: str = "triton_oxfoi_instruction",
+        output_key: str = "triton_oxfoi_execution",
+        instruction_kind_key: str = "triton_instruction_kind",
+        instruction_arg_key: str = "triton_instruction_argument",
+        field_domain_key: str = "triton_field_domain",
+    ):
+        super().__init__(
+            name="build_triton_oxfoi_execution",
+            inputs=[initialization_record_key],
+            outputs=[output_key, instruction_key],
+        )
+        self.initialization_record_key = initialization_record_key
+        self.instruction_key = instruction_key
+        self.output_key = output_key
+        self.instruction_kind_key = instruction_kind_key
+        self.instruction_arg_key = instruction_arg_key
+        self.field_domain_key = field_domain_key
+
+    def run(self, context: DagContext) -> DagContext:
+        initialization_record: InitializationVectorRecord = context[self.initialization_record_key]
+        instruction = context.get(self.instruction_key)
+        if instruction is None:
+            instruction = build_triton_instruction(
+                str(context.get(self.instruction_kind_key, "push")),
+                argument=context.get(self.instruction_arg_key, 1),
+                field_domain=str(context.get(self.field_domain_key, "B")),
+            )
+        input_state = context.get("triton_oxfoi_state")
+        if input_state is None:
+            input_state = build_triton_state(
+                initialization_record,
+                field_domain=instruction.field_domain,
+            )
+        execution = execute_triton_instruction(
+            initialization_record,
+            instruction,
+            input_state=input_state,
+        )
+        return {
+            self.instruction_key: instruction,
+            self.output_key: execution,
+            "triton_oxfoi_state": execution.output_state,
+        }
+
+
+@dataclass
+class BuildMachineStateRecordNode(DagNode):
+    def __init__(
+        self,
+        initialization_record_key: str = "initialization_vector_record",
+        stem_path_key: str = "stem_path",
+        startup_sequence_key: str = "startup_sequence",
+        startup_event_key: str = "startup_event_index",
+        startup_event_manifest_key: str = "startup_event_manifest_path",
+        oxfoi_evaluation_key: str = "oxfoi_evaluation",
+        oxfoi_event_key: str = "oxfoi_event_index",
+        oxfoi_event_manifest_key: str = "oxfoi_event_manifest_path",
+        memristor_map_key: str = "memristor_map",
+        memristor_integration_key: str = "memristor_integration",
+        triton_execution_key: str = "triton_oxfoi_execution",
+        triton_event_key: str = "triton_oxfoi_event_index",
+        triton_event_manifest_key: str = "triton_oxfoi_event_manifest_path",
+        causal_graph_manifest_key: str = "causal_graph_manifest_path",
+        hypergraph_manifest_key: str = "hypergraph_candidate_manifest_path",
+        recrystallization_key: str = "recrystallization",
+        recrystallization_manifest_key: str = "recrystallization_manifest_path",
+        production_pointer_key: str = "production_pointer",
+        production_pointer_manifest_key: str = "production_pointer_manifest_path",
+        output_key: str = "machine_state_record",
+    ):
+        super().__init__(
+            name="build_machine_state_record",
+            inputs=[initialization_record_key],
+            outputs=[output_key],
+        )
+        self.initialization_record_key = initialization_record_key
+        self.stem_path_key = stem_path_key
+        self.startup_sequence_key = startup_sequence_key
+        self.startup_event_key = startup_event_key
+        self.startup_event_manifest_key = startup_event_manifest_key
+        self.oxfoi_evaluation_key = oxfoi_evaluation_key
+        self.oxfoi_event_key = oxfoi_event_key
+        self.oxfoi_event_manifest_key = oxfoi_event_manifest_key
+        self.memristor_map_key = memristor_map_key
+        self.memristor_integration_key = memristor_integration_key
+        self.triton_execution_key = triton_execution_key
+        self.triton_event_key = triton_event_key
+        self.triton_event_manifest_key = triton_event_manifest_key
+        self.causal_graph_manifest_key = causal_graph_manifest_key
+        self.hypergraph_manifest_key = hypergraph_manifest_key
+        self.recrystallization_key = recrystallization_key
+        self.recrystallization_manifest_key = recrystallization_manifest_key
+        self.production_pointer_key = production_pointer_key
+        self.production_pointer_manifest_key = production_pointer_manifest_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        initialization_record: InitializationVectorRecord = context[self.initialization_record_key]
+        stem_path = context.get(self.stem_path_key)
+        startup_sequence: StartupSequence | None = context.get(self.startup_sequence_key)
+        startup_event_index: UpdateEventIndex | None = context.get(self.startup_event_key)
+        startup_event_manifest_path = context.get(self.startup_event_manifest_key)
+        oxfoi_evaluation: OxfoiEvaluationRecord | None = context.get(self.oxfoi_evaluation_key)
+        oxfoi_event_index: UpdateEventIndex | None = context.get(self.oxfoi_event_key)
+        oxfoi_event_manifest_path = context.get(self.oxfoi_event_manifest_key)
+        memristor_map: MemristorMapRecord | None = context.get(self.memristor_map_key)
+        memristor_integration: MemristorIntegrationRecord | None = context.get(self.memristor_integration_key)
+        triton_execution = context.get(self.triton_execution_key)
+        triton_event_index: UpdateEventIndex | None = context.get(self.triton_event_key)
+        triton_event_manifest_path = context.get(self.triton_event_manifest_key)
+        causal_graph_manifest_path = context.get(self.causal_graph_manifest_key)
+        hypergraph_manifest_path = context.get(self.hypergraph_manifest_key)
+        recrystallization: RecrystallizationRecord | None = context.get(self.recrystallization_key)
+        recrystallization_manifest_path = context.get(self.recrystallization_manifest_key)
+        pointer: ProductionPointerRecord | None = context.get(self.production_pointer_key)
+        production_pointer_manifest_path = context.get(self.production_pointer_manifest_key)
+
+        startup_surface_count = len(startup_sequence.surfaces) if startup_sequence is not None else 0
+        startup_checkpoint_count = len(startup_sequence.persisted_paths) if startup_sequence is not None else 0
+        startup_event_count = len(startup_event_index.records) if startup_event_index is not None else 0
+        oxfoi_expression_id = oxfoi_evaluation.expression.expression_id if oxfoi_evaluation is not None else None
+        oxfoi_transition_id = oxfoi_evaluation.transition.transition_id if oxfoi_evaluation is not None else None
+        oxfoi_field_domain = oxfoi_evaluation.expression.field_domain if oxfoi_evaluation is not None else None
+        oxfoi_instruction_width_words = (
+            oxfoi_evaluation.expression.instruction_width_words if oxfoi_evaluation is not None else None
+        )
+        triton_instruction_id = triton_execution.instruction.instruction_id if triton_execution is not None else None
+        triton_instruction_kind = triton_execution.instruction.instruction_kind if triton_execution is not None else None
+        triton_instruction_width_words = (
+            triton_execution.instruction.instruction_width_words if triton_execution is not None else None
+        )
+        triton_field_domain = triton_execution.instruction.field_domain if triton_execution is not None else None
+        triton_state_id = triton_execution.output_state.state_id if triton_execution is not None else None
+        current_state_id = pointer.current_state_id if pointer is not None else (
+            oxfoi_evaluation.output_state.state_id if oxfoi_evaluation is not None else None
+        )
+        machine_id = f"mach_{_pointer_digest(initialization_record.prefix, current_state_id or '', oxfoi_expression_id or '')}"
+        record = MachineStateRecord(
+            machine_id=machine_id,
+            init_origin=initialization_record.prefix,
+            current_state_id=current_state_id,
+            startup_surface_count=startup_surface_count,
+            startup_checkpoint_count=startup_checkpoint_count,
+            startup_event_count=startup_event_count,
+            oxfoi_expression_id=oxfoi_expression_id,
+            oxfoi_transition_id=oxfoi_transition_id,
+            oxfoi_field_domain=oxfoi_field_domain,
+            oxfoi_instruction_width_words=oxfoi_instruction_width_words,
+            memristor_map_id=memristor_map.map_id if memristor_map is not None else None,
+            memristor_lattice_family=memristor_map.lattice_family if memristor_map is not None else None,
+            memristor_modulated_site_count=(
+                len(memristor_integration.modulation_sites) if memristor_integration is not None else 0
+            ),
+            triton_instruction_id=triton_instruction_id,
+            triton_instruction_kind=triton_instruction_kind,
+            triton_instruction_width_words=triton_instruction_width_words,
+            triton_field_domain=triton_field_domain,
+            triton_state_id=triton_state_id,
+            recrystallization_id=recrystallization.recrystallization_id if recrystallization is not None else None,
+            recrystallized_state_id=recrystallization.selected_state_id if recrystallization is not None else None,
+            recrystallization_source=recrystallization.selected_source if recrystallization is not None else None,
+            production_pointer_id=pointer.pointer_id if pointer is not None else None,
+            target_domain=pointer.target_domain if pointer is not None else None,
+            target_confidence=float(pointer.target_confidence) if pointer is not None else 0.0,
+            metadata={
+                "global_recursive_limit": initialization_record.global_recursive_limit,
+                "materialized_recursive_steps": initialization_record.materialized_recursive_steps,
+                "persisted_checkpoint_count": initialization_record.persisted_checkpoint_count,
+                "stem_path": str(Path(stem_path).resolve()) if stem_path is not None else None,
+                "startup_final_path": str(startup_sequence.final_path) if startup_sequence is not None else None,
+                "startup_event_manifest_path": (
+                    str(Path(startup_event_manifest_path).resolve()) if startup_event_manifest_path is not None else None
+                ),
+                "oxfoi_event_manifest_path": (
+                    str(Path(oxfoi_event_manifest_path).resolve()) if oxfoi_event_manifest_path is not None else None
+                ),
+                "triton_event_manifest_path": (
+                    str(Path(triton_event_manifest_path).resolve()) if triton_event_manifest_path is not None else None
+                ),
+                "causal_graph_manifest_path": (
+                    str(Path(causal_graph_manifest_path).resolve()) if causal_graph_manifest_path is not None else None
+                ),
+                "hypergraph_candidate_manifest_path": (
+                    str(Path(hypergraph_manifest_path).resolve()) if hypergraph_manifest_path is not None else None
+                ),
+                "recrystallization_manifest_path": (
+                    str(Path(recrystallization_manifest_path).resolve())
+                    if recrystallization_manifest_path is not None
+                    else None
+                ),
+                "production_pointer_manifest_path": (
+                    str(Path(production_pointer_manifest_path).resolve())
+                    if production_pointer_manifest_path is not None
+                    else None
+                ),
+                "pointer_preferred_output": pointer.preferred_output if pointer is not None else None,
+                "oxfoi_event_count": len(oxfoi_event_index.records) if oxfoi_event_index is not None else 0,
+                "memristor_loop_density": (
+                    memristor_map.metadata.get("loop_density") if memristor_map is not None else None
+                ),
+                "memristor_fundamental_loop_rank": (
+                    memristor_map.metadata.get("fundamental_loop_rank") if memristor_map is not None else None
+                ),
+                "memristor_relaxation_score": (
+                    memristor_map.metadata.get("relaxation_score") if memristor_map is not None else None
+                ),
+                "memristor_average_conductance": (
+                    memristor_integration.metadata.get("average_conductance")
+                    if memristor_integration is not None
+                    else None
+                ),
+                "memristor_relaxation_projection_score": (
+                    memristor_integration.metadata.get("relaxation_projection_score")
+                    if memristor_integration is not None
+                    else None
+                ),
+                "triton_event_count": len(triton_event_index.records) if triton_event_index is not None else 0,
+                "startup_alignment_score": (
+                    pointer.safety_bounds.get("startup_alignment_score") if pointer is not None else None
+                ),
+                "oxfoi_alignment_score": (
+                    pointer.safety_bounds.get("oxfoi_alignment_score") if pointer is not None else None
+                ),
+                "memristor_alignment_score": (
+                    pointer.safety_bounds.get("memristor_alignment_score") if pointer is not None else None
+                ),
+                "triton_alignment_score": (
+                    pointer.safety_bounds.get("triton_alignment_score") if pointer is not None else None
+                ),
+                "recrystallization_score": (
+                    recrystallization.selected_score if recrystallization is not None else None
+                ),
+                "recrystallization_candidate_count": (
+                    len(recrystallization.candidates) if recrystallization is not None else 0
+                ),
+                "triton_operand_stack": (
+                    list(triton_execution.output_state.operand_stack) if triton_execution is not None else None
+                ),
+            },
+        )
+        return {self.output_key: record}
+
+
+@dataclass
+class BuildExpertAssessmentNode(DagNode):
+    def __init__(
+        self,
+        machine_state_key: str = "machine_state_record",
+        production_pointer_key: str = "production_pointer",
+        hypergraph_key: str = "hypergraph_candidate_index",
+        causal_graph_key: str = "causal_graph_index",
+        output_key: str = "expert_assessment",
+    ):
+        super().__init__(
+            name="build_expert_assessment",
+            inputs=[machine_state_key],
+            outputs=[output_key],
+        )
+        self.machine_state_key = machine_state_key
+        self.production_pointer_key = production_pointer_key
+        self.hypergraph_key = hypergraph_key
+        self.causal_graph_key = causal_graph_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        machine_state: MachineStateRecord = context[self.machine_state_key]
+        pointer: ProductionPointerRecord | None = context.get(self.production_pointer_key)
+        hypergraph_index: HypergraphCandidateIndex | None = context.get(self.hypergraph_key)
+        causal_graph_index: CausalGraphIndex | None = context.get(self.causal_graph_key)
+        assessment = build_expert_assessment(
+            machine_state,
+            production_pointer=pointer,
+            hypergraph_index=hypergraph_index,
+            causal_graph_index=causal_graph_index,
+        )
+        return {self.output_key: assessment}
+
+
+@dataclass
+class BuildRecrystallizationNode(DagNode):
+    def __init__(
+        self,
+        machine_state_key: str = "machine_state_record",
+        production_pointer_key: str = "production_pointer",
+        expert_assessment_key: str = "expert_assessment",
+        hypergraph_key: str = "hypergraph_candidate_index",
+        causal_graph_key: str = "causal_graph_index",
+        output_key: str = "recrystallization",
+    ):
+        super().__init__(
+            name="build_recrystallization",
+            inputs=[machine_state_key],
+            outputs=[output_key],
+        )
+        self.machine_state_key = machine_state_key
+        self.production_pointer_key = production_pointer_key
+        self.expert_assessment_key = expert_assessment_key
+        self.hypergraph_key = hypergraph_key
+        self.causal_graph_key = causal_graph_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        machine_state: MachineStateRecord = context[self.machine_state_key]
+        pointer: ProductionPointerRecord | None = context.get(self.production_pointer_key)
+        expert_assessment: ExpertAssessmentRecord | None = context.get(self.expert_assessment_key)
+        hypergraph_index: HypergraphCandidateIndex | None = context.get(self.hypergraph_key)
+        causal_graph_index: CausalGraphIndex | None = context.get(self.causal_graph_key)
+        return {
+            self.output_key: build_recrystallization(
+                machine_state,
+                production_pointer=pointer,
+                expert_assessment=expert_assessment,
+                hypergraph_index=hypergraph_index,
+                causal_graph_index=causal_graph_index,
+            )
+        }
+
+
+@dataclass
+class PersistExpertAssessmentNode(DagNode):
+    def __init__(
+        self,
+        expert_assessment_key: str = "expert_assessment",
+        workspace_key: str = "workspace",
+        output_key: str = "expert_assessment_manifest_path",
+    ):
+        super().__init__(
+            name="persist_expert_assessment",
+            inputs=[expert_assessment_key, workspace_key],
+            outputs=[output_key],
+        )
+        self.expert_assessment_key = expert_assessment_key
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        assessment: ExpertAssessmentRecord = context[self.expert_assessment_key]
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        manifest_path = workspace.root / "runs" / f"{assessment.assessment_id}.json"
+        manifest_path.write_text(json.dumps(asdict(assessment), indent=2, sort_keys=True), encoding="utf-8")
+        return {self.output_key: manifest_path}
+
+
+@dataclass
+class PersistRecrystallizationNode(DagNode):
+    def __init__(
+        self,
+        recrystallization_key: str = "recrystallization",
+        workspace_key: str = "workspace",
+        output_key: str = "recrystallization_manifest_path",
+    ):
+        super().__init__(
+            name="persist_recrystallization",
+            inputs=[recrystallization_key, workspace_key],
+            outputs=[output_key],
+        )
+        self.recrystallization_key = recrystallization_key
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        record: RecrystallizationRecord = context[self.recrystallization_key]
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        manifest_path = workspace.root / "runs" / f"{record.recrystallization_id}.json"
+        manifest_path.write_text(json.dumps(asdict(record), indent=2, sort_keys=True), encoding="utf-8")
+        return {self.output_key: manifest_path}
+
+
+@dataclass
+class PersistMachineStateRecordNode(DagNode):
+    def __init__(
+        self,
+        machine_state_key: str = "machine_state_record",
+        workspace_key: str = "workspace",
+        output_key: str = "machine_state_manifest_path",
+    ):
+        super().__init__(
+            name="persist_machine_state_record",
+            inputs=[machine_state_key, workspace_key],
+            outputs=[output_key],
+        )
+        self.machine_state_key = machine_state_key
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        machine_state: MachineStateRecord = context[self.machine_state_key]
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        manifest_path = workspace.root / "runs" / f"{machine_state.machine_id}.json"
+        manifest_path.write_text(json.dumps(asdict(machine_state), indent=2, sort_keys=True), encoding="utf-8")
+        return {self.output_key: manifest_path}
+
+
+@dataclass
+class BuildMemristorMapNode(DagNode):
+    def __init__(
+        self,
+        initialization_record_key: str = "initialization_vector_record",
+        output_key: str = "memristor_map",
+        lattice_size_key: str = "memristor_lattice_size",
+        field_domain_key: str = "memristor_field_domain",
+    ):
+        super().__init__(
+            name="build_memristor_map",
+            inputs=[initialization_record_key],
+            outputs=[output_key],
+        )
+        self.initialization_record_key = initialization_record_key
+        self.output_key = output_key
+        self.lattice_size_key = lattice_size_key
+        self.field_domain_key = field_domain_key
+
+    def run(self, context: DagContext) -> DagContext:
+        initialization_record: InitializationVectorRecord = context[self.initialization_record_key]
+        lattice_size = int(context.get(self.lattice_size_key, 5))
+        field_domain = str(context.get(self.field_domain_key, "B"))
+        memristor_map = build_memristor_map(
+            initialization_record,
+            lattice_size=lattice_size,
+            field_domain=field_domain,
+        )
+        return {self.output_key: memristor_map}
+
+
+@dataclass
+class BuildMemristorIntegrationNode(DagNode):
+    def __init__(
+        self,
+        memristor_map_key: str = "memristor_map",
+        oxfoi_evaluation_key: str = "oxfoi_evaluation",
+        ternlsb_payload_key: str = "ternlsb_payload",
+        output_key: str = "memristor_integration",
+    ):
+        super().__init__(
+            name="build_memristor_integration",
+            inputs=[memristor_map_key],
+            outputs=[output_key],
+        )
+        self.memristor_map_key = memristor_map_key
+        self.oxfoi_evaluation_key = oxfoi_evaluation_key
+        self.ternlsb_payload_key = ternlsb_payload_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        memristor_map: MemristorMapRecord = context[self.memristor_map_key]
+        oxfoi_evaluation: OxfoiEvaluationRecord | None = context.get(self.oxfoi_evaluation_key)
+        ternlsb_payload = str(context.get(self.ternlsb_payload_key, ""))
+        integration = integrate_ternlsb_into_memristor_map(
+            memristor_map,
+            oxfoi_evaluation=oxfoi_evaluation,
+            ternlsb_payload=ternlsb_payload,
+        )
+        return {self.output_key: integration}
+
+
+@dataclass
+class PersistCausalGraphIndexNode(DagNode):
+    def __init__(
+        self,
+        causal_graph_key: str = "causal_graph_index",
+        workspace_key: str = "workspace",
+        output_key: str = "causal_graph_manifest_path",
+    ):
+        super().__init__(
+            name="persist_causal_graph_index",
+            inputs=[causal_graph_key, workspace_key],
+            outputs=[output_key],
+        )
+        self.causal_graph_key = causal_graph_key
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        causal_graph: CausalGraphIndex = context[self.causal_graph_key]
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        manifest_path = workspace.root / "runs" / "causal_graph_index.json"
+        manifest_path.write_text(json.dumps(asdict(causal_graph), indent=2, sort_keys=True), encoding="utf-8")
+        return {self.output_key: manifest_path}
+
+
+@dataclass
+class PersistHypergraphCandidateIndexNode(DagNode):
+    def __init__(
+        self,
+        hypergraph_key: str = "hypergraph_candidate_index",
+        workspace_key: str = "workspace",
+        output_key: str = "hypergraph_candidate_manifest_path",
+    ):
+        super().__init__(
+            name="persist_hypergraph_candidate_index",
+            inputs=[hypergraph_key, workspace_key],
+            outputs=[output_key],
+        )
+        self.hypergraph_key = hypergraph_key
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        hypergraph_index: HypergraphCandidateIndex = context[self.hypergraph_key]
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        manifest_path = workspace.root / "runs" / "hypergraph_candidate_index.json"
+        manifest_path.write_text(json.dumps(asdict(hypergraph_index), indent=2, sort_keys=True), encoding="utf-8")
+        return {self.output_key: manifest_path}
+
+
+@dataclass
+class PersistStartupEventIndexNode(DagNode):
+    def __init__(
+        self,
+        event_index_key: str = "startup_event_index",
+        workspace_key: str = "workspace",
+        output_key: str = "startup_event_manifest_path",
+    ):
+        super().__init__(
+            name="persist_startup_event_index",
+            inputs=[event_index_key, workspace_key],
+            outputs=[output_key],
+        )
+        self.event_index_key = event_index_key
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        event_index: UpdateEventIndex = context[self.event_index_key]
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        manifest_path = workspace.root / "runs" / "startup_event_index.json"
+        manifest_path.write_text(json.dumps(asdict(event_index), indent=2, sort_keys=True), encoding="utf-8")
+        return {self.output_key: manifest_path}
+
+
+@dataclass
+class PersistOxfoiEventIndexNode(DagNode):
+    def __init__(
+        self,
+        event_index_key: str = "oxfoi_event_index",
+        workspace_key: str = "workspace",
+        output_key: str = "oxfoi_event_manifest_path",
+    ):
+        super().__init__(
+            name="persist_oxfoi_event_index",
+            inputs=[event_index_key, workspace_key],
+            outputs=[output_key],
+        )
+        self.event_index_key = event_index_key
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        event_index: UpdateEventIndex = context[self.event_index_key]
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        manifest_path = workspace.root / "runs" / "oxfoi_event_index.json"
+        manifest_path.write_text(json.dumps(asdict(event_index), indent=2, sort_keys=True), encoding="utf-8")
+        return {self.output_key: manifest_path}
+
+
+@dataclass
+class PersistTritonOxfoiEventIndexNode(DagNode):
+    def __init__(
+        self,
+        event_index_key: str = "triton_oxfoi_event_index",
+        workspace_key: str = "workspace",
+        output_key: str = "triton_oxfoi_event_manifest_path",
+    ):
+        super().__init__(
+            name="persist_triton_oxfoi_event_index",
+            inputs=[event_index_key, workspace_key],
+            outputs=[output_key],
+        )
+        self.event_index_key = event_index_key
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        event_index: UpdateEventIndex = context[self.event_index_key]
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        manifest_path = workspace.root / "runs" / "triton_oxfoi_event_index.json"
+        manifest_path.write_text(json.dumps(asdict(event_index), indent=2, sort_keys=True), encoding="utf-8")
+        return {self.output_key: manifest_path}
 
 
 @dataclass
@@ -904,28 +1660,228 @@ class BuildUpdateEventIndexNode(DagNode):
 
 
 @dataclass
+class BuildStartupEventIndexNode(DagNode):
+    def __init__(
+        self,
+        startup_sequence_key: str = "startup_sequence",
+        initialization_vector_key: str = "initialization_vector",
+        output_key: str = "startup_event_index",
+    ):
+        super().__init__(
+            name="build_startup_event_index",
+            inputs=[startup_sequence_key, initialization_vector_key],
+            outputs=[output_key],
+        )
+        self.startup_sequence_key = startup_sequence_key
+        self.initialization_vector_key = initialization_vector_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        from .initialization import StartupSequence
+
+        sequence: StartupSequence = context[self.startup_sequence_key]
+        vector: StartupInitializationVector = context[self.initialization_vector_key]
+        records: list[UpdateEventRecord] = []
+        steps_per_checkpoint = max(1, int(vector.recursion_steps_per_frame))
+
+        previous_id = "startup:root"
+        records.append(
+            UpdateEventRecord(
+                event_id=f"evt_{_pointer_digest('startup', 'root', vector.prefix)}",
+                event_type="startup_begin",
+                input_ids=[],
+                output_ids=[previous_id],
+                state_ids=[previous_id],
+                metadata={
+                    "seed_path": str(vector.seed_path),
+                    "prefix": vector.prefix,
+                    "global_recursive_limit": int(vector.global_recursive_limit),
+                    "materialized_recursive_steps": int(vector.materialized_recursive_steps),
+                },
+            )
+        )
+
+        for step_index, _surface in enumerate(sequence.surfaces[1:], start=1):
+            state_id = f"startup:{step_index}"
+            event_type = "startup_checkpoint" if step_index % steps_per_checkpoint == 0 else "startup_transition"
+            records.append(
+                UpdateEventRecord(
+                    event_id=f"evt_{_pointer_digest('startup', previous_id, state_id)}",
+                    event_type=event_type,
+                    input_ids=[previous_id],
+                    output_ids=[state_id],
+                    state_ids=[previous_id, state_id],
+                    metadata={
+                        "step_index": step_index,
+                        "checkpoint_interval_steps": steps_per_checkpoint,
+                        "is_checkpoint": step_index % steps_per_checkpoint == 0,
+                    },
+                )
+            )
+            previous_id = state_id
+
+        records.append(
+            UpdateEventRecord(
+                event_id=f"evt_{_pointer_digest('startup', 'final', previous_id)}",
+                event_type="startup_complete",
+                input_ids=[previous_id],
+                output_ids=[str(sequence.final_path)],
+                state_ids=[previous_id],
+                metadata={
+                    "final_path": str(sequence.final_path),
+                    "persisted_checkpoint_count": len(sequence.persisted_paths),
+                    "surface_count": len(sequence.surfaces),
+                },
+            )
+        )
+        return {self.output_key: UpdateEventIndex(records=records)}
+
+
+@dataclass
+class BuildOxfoiEventIndexNode(DagNode):
+    def __init__(
+        self,
+        oxfoi_evaluation_key: str = "oxfoi_evaluation",
+        output_key: str = "oxfoi_event_index",
+    ):
+        super().__init__(
+            name="build_oxfoi_event_index",
+            inputs=[oxfoi_evaluation_key],
+            outputs=[output_key],
+        )
+        self.oxfoi_evaluation_key = oxfoi_evaluation_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        evaluation: OxfoiEvaluationRecord = context[self.oxfoi_evaluation_key]
+        expression = evaluation.expression
+        transition = evaluation.transition
+        records = [
+            UpdateEventRecord(
+                event_id=f"evt_{_pointer_digest('oxfoi', 'expression', expression.expression_id)}",
+                event_type="oxfoi_expression",
+                input_ids=[],
+                output_ids=[expression.expression_id],
+                state_ids=[evaluation.input_state.state_id],
+                metadata={
+                    "field_domain": expression.field_domain,
+                    "instruction_width_words": expression.instruction_width_words,
+                    "single_use": expression.single_use,
+                    "payload": expression.payload,
+                },
+            ),
+            UpdateEventRecord(
+                event_id=f"evt_{_pointer_digest('oxfoi', 'transition', transition.transition_id)}",
+                event_type="oxfoi_transition",
+                input_ids=[evaluation.input_state.state_id, expression.expression_id],
+                output_ids=[evaluation.output_state.state_id],
+                state_ids=[evaluation.input_state.state_id, evaluation.output_state.state_id],
+                metadata={
+                    "transition_id": transition.transition_id,
+                    "field_domain": transition.field_domain,
+                    "instruction_width_words": transition.instruction_width_words,
+                    "displacement_kind": transition.displacement_kind,
+                    **dict(transition.metadata),
+                },
+            ),
+        ]
+        return {self.output_key: UpdateEventIndex(records=records)}
+
+
+@dataclass
+class BuildTritonOxfoiEventIndexNode(DagNode):
+    def __init__(
+        self,
+        execution_key: str = "triton_oxfoi_execution",
+        output_key: str = "triton_oxfoi_event_index",
+    ):
+        super().__init__(
+            name="build_triton_oxfoi_event_index",
+            inputs=[execution_key],
+            outputs=[output_key],
+        )
+        self.execution_key = execution_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        execution: TritonOxfoiExecutionRecord = context[self.execution_key]
+        instruction = execution.instruction
+        records = [
+            UpdateEventRecord(
+                event_id=f"evt_{_pointer_digest('triton', 'instruction', instruction.instruction_id)}",
+                event_type="triton_instruction",
+                input_ids=[],
+                output_ids=[instruction.instruction_id],
+                state_ids=[execution.input_state.state_id],
+                metadata={
+                    "instruction_kind": instruction.instruction_kind,
+                    "instruction_width_words": instruction.instruction_width_words,
+                    "argument": instruction.argument,
+                    "field_domain": instruction.field_domain,
+                },
+            ),
+            UpdateEventRecord(
+                event_id=f"evt_{_pointer_digest('triton', 'execution', execution.output_state.state_id, instruction.instruction_id)}",
+                event_type="triton_execution",
+                input_ids=[execution.input_state.state_id, instruction.instruction_id],
+                output_ids=[execution.output_state.state_id],
+                state_ids=[execution.input_state.state_id, execution.output_state.state_id],
+                metadata={
+                    "instruction_kind": instruction.instruction_kind,
+                    "instruction_width_words": instruction.instruction_width_words,
+                    "field_domain": instruction.field_domain,
+                    **dict(execution.metadata),
+                },
+            ),
+        ]
+        return {self.output_key: UpdateEventIndex(records=records)}
+
+
+@dataclass
 class BuildCausalGraphIndexNode(DagNode):
     def __init__(
         self,
         update_event_key: str = "update_event_index",
+        startup_event_key: str = "startup_event_index",
+        oxfoi_event_key: str = "oxfoi_event_index",
+        triton_event_key: str = "triton_oxfoi_event_index",
         output_key: str = "causal_graph_index",
     ):
         super().__init__(
             name="build_causal_graph_index",
-            inputs=[update_event_key],
+            inputs=[],
             outputs=[output_key],
         )
         self.update_event_key = update_event_key
+        self.startup_event_key = startup_event_key
+        self.oxfoi_event_key = oxfoi_event_key
+        self.triton_event_key = triton_event_key
         self.output_key = output_key
 
     def run(self, context: DagContext) -> DagContext:
-        update_event_index: UpdateEventIndex = context[self.update_event_key]
-        records = list(update_event_index.records)
+        records: list[UpdateEventRecord] = []
+        update_event_index: UpdateEventIndex | None = context.get(self.update_event_key)
+        startup_event_index: UpdateEventIndex | None = context.get(self.startup_event_key)
+        oxfoi_event_index: UpdateEventIndex | None = context.get(self.oxfoi_event_key)
+        triton_event_index: UpdateEventIndex | None = context.get(self.triton_event_key)
+        if update_event_index is not None:
+            records.extend(update_event_index.records)
+        if startup_event_index is not None:
+            records.extend(startup_event_index.records)
+        if oxfoi_event_index is not None:
+            records.extend(oxfoi_event_index.records)
+        if triton_event_index is not None:
+            records.extend(triton_event_index.records)
         dependencies: list[CausalDependencyRecord] = []
 
         state_to_generation_event: dict[str, str] = {}
         chain_events: list[UpdateEventRecord] = []
+        startup_events: list[UpdateEventRecord] = []
         collapse_events: list[UpdateEventRecord] = []
+        oxfoi_expression_events: list[UpdateEventRecord] = []
+        oxfoi_transition_events: list[UpdateEventRecord] = []
+        triton_instruction_events: list[UpdateEventRecord] = []
+        triton_execution_events: list[UpdateEventRecord] = []
 
         for record in records:
             if record.event_type == "subtree_generation":
@@ -933,8 +1889,30 @@ class BuildCausalGraphIndexNode(DagNode):
                     state_to_generation_event[state_id] = record.event_id
             elif record.event_type == "chain_transition":
                 chain_events.append(record)
+            elif record.event_type in {"startup_begin", "startup_transition", "startup_checkpoint", "startup_complete"}:
+                startup_events.append(record)
             elif record.event_type == "canonical_collapse":
                 collapse_events.append(record)
+            elif record.event_type == "oxfoi_expression":
+                oxfoi_expression_events.append(record)
+            elif record.event_type == "oxfoi_transition":
+                oxfoi_transition_events.append(record)
+            elif record.event_type == "triton_instruction":
+                triton_instruction_events.append(record)
+            elif record.event_type == "triton_execution":
+                triton_execution_events.append(record)
+
+        for previous, current in zip(startup_events, startup_events[1:]):
+            dependency_id = f"dep_{_pointer_digest('startup', previous.event_id, current.event_id)}"
+            dependencies.append(
+                CausalDependencyRecord(
+                    dependency_id=dependency_id,
+                    cause_event_id=previous.event_id,
+                    effect_event_id=current.event_id,
+                    dependency_type="startup_order",
+                    metadata={},
+                )
+            )
 
         for previous, current in zip(chain_events, chain_events[1:]):
             dependency_id = f"dep_{_pointer_digest('chain', previous.event_id, current.event_id)}"
@@ -945,6 +1923,37 @@ class BuildCausalGraphIndexNode(DagNode):
                     effect_event_id=current.event_id,
                     dependency_type="chain_order",
                     metadata={},
+                )
+            )
+
+        for expression_event, transition_event in zip(oxfoi_expression_events, oxfoi_transition_events):
+            dependency_id = f"dep_{_pointer_digest('oxfoi', expression_event.event_id, transition_event.event_id)}"
+            dependencies.append(
+                CausalDependencyRecord(
+                    dependency_id=dependency_id,
+                    cause_event_id=expression_event.event_id,
+                    effect_event_id=transition_event.event_id,
+                    dependency_type="oxfoi_expression_application",
+                    metadata={
+                        "expression_id": expression_event.output_ids[0] if expression_event.output_ids else None,
+                        "displacement_kind": transition_event.metadata.get("displacement_kind"),
+                    },
+                )
+            )
+
+        for instruction_event, execution_event in zip(triton_instruction_events, triton_execution_events):
+            dependency_id = f"dep_{_pointer_digest('triton', instruction_event.event_id, execution_event.event_id)}"
+            dependencies.append(
+                CausalDependencyRecord(
+                    dependency_id=dependency_id,
+                    cause_event_id=instruction_event.event_id,
+                    effect_event_id=execution_event.event_id,
+                    dependency_type="triton_instruction_application",
+                    metadata={
+                        "instruction_id": instruction_event.output_ids[0] if instruction_event.output_ids else None,
+                        "instruction_kind": execution_event.metadata.get("instruction_kind"),
+                        "instruction_width_words": execution_event.metadata.get("instruction_width_words"),
+                    },
                 )
             )
 
@@ -997,6 +2006,11 @@ class BuildHypergraphCandidateIndexNode(DagNode):
         generated_states_key: str = "generated_states",
         canonical_index_key: str = "canonical_state_index",
         dedupe_key: str = "dedupe_summary",
+        startup_event_key: str = "startup_event_index",
+        oxfoi_event_key: str = "oxfoi_event_index",
+        memristor_integration_key: str = "memristor_integration",
+        triton_event_key: str = "triton_oxfoi_event_index",
+        causal_graph_key: str = "causal_graph_index",
         output_key: str = "hypergraph_candidate_index",
     ):
         super().__init__(
@@ -1009,6 +2023,11 @@ class BuildHypergraphCandidateIndexNode(DagNode):
         self.generated_states_key = generated_states_key
         self.canonical_index_key = canonical_index_key
         self.dedupe_key = dedupe_key
+        self.startup_event_key = startup_event_key
+        self.oxfoi_event_key = oxfoi_event_key
+        self.memristor_integration_key = memristor_integration_key
+        self.triton_event_key = triton_event_key
+        self.causal_graph_key = causal_graph_key
         self.output_key = output_key
 
     def run(self, context: DagContext) -> DagContext:
@@ -1017,6 +2036,11 @@ class BuildHypergraphCandidateIndexNode(DagNode):
         generated_states: list[ArchivedState] = list(context[self.generated_states_key])
         canonical_index: CanonicalStateIndex = context[self.canonical_index_key]
         dedupe_summary: DedupeSummary = context[self.dedupe_key]
+        startup_event_index: UpdateEventIndex | None = context.get(self.startup_event_key)
+        oxfoi_event_index: UpdateEventIndex | None = context.get(self.oxfoi_event_key)
+        memristor_integration: MemristorIntegrationRecord | None = context.get(self.memristor_integration_key)
+        triton_event_index: UpdateEventIndex | None = context.get(self.triton_event_key)
+        causal_graph_index: CausalGraphIndex | None = context.get(self.causal_graph_key)
 
         signature_to_canonical = {
             record.signature: str(record.canonical_path)
@@ -1115,6 +2139,142 @@ class BuildHypergraphCandidateIndexNode(DagNode):
                 )
             )
 
+        if startup_event_index is not None:
+            startup_records = [
+                record
+                for record in startup_event_index.records
+                if record.event_type in {"startup_checkpoint", "startup_complete"}
+            ]
+            for record in startup_records:
+                records.append(
+                    HyperedgeCandidateRecord(
+                        edge_type="startup_checkpoint_relation",
+                        input_nodes=list(record.input_ids),
+                        output_nodes=list(record.output_ids),
+                        support_nodes=[
+                            str(record.metadata.get("final_path"))
+                            if record.event_type == "startup_complete"
+                            else f"startup_step:{record.metadata.get('step_index', 0)}"
+                        ],
+                        metadata={
+                            "event_id": record.event_id,
+                            "event_type": record.event_type,
+                            "step_index": int(record.metadata.get("step_index", 0)),
+                            "is_checkpoint": bool(record.metadata.get("is_checkpoint", record.event_type == "startup_checkpoint")),
+                        },
+                    )
+                )
+
+        if oxfoi_event_index is not None:
+            for record in oxfoi_event_index.records:
+                if record.event_type not in {"oxfoi_expression", "oxfoi_transition"}:
+                    continue
+                support_nodes = []
+                if record.event_type == "oxfoi_transition":
+                    support_nodes.append(str(record.metadata.get("displacement_kind", "")))
+                records.append(
+                    HyperedgeCandidateRecord(
+                        edge_type=f"{record.event_type}_relation",
+                        input_nodes=list(record.input_ids),
+                        output_nodes=list(record.output_ids),
+                        support_nodes=support_nodes,
+                        metadata={
+                            "event_id": record.event_id,
+                            **dict(record.metadata),
+                        },
+                    )
+                )
+
+        if triton_event_index is not None:
+            for record in triton_event_index.records:
+                if record.event_type not in {"triton_instruction", "triton_execution"}:
+                    continue
+                support_nodes = []
+                if record.event_type == "triton_execution":
+                    support_nodes.extend(
+                        [
+                            str(record.metadata.get("instruction_kind", "")),
+                            str(record.metadata.get("instruction_width_words", "")),
+                        ]
+                    )
+                records.append(
+                    HyperedgeCandidateRecord(
+                        edge_type=f"{record.event_type}_relation",
+                        input_nodes=list(record.input_ids),
+                        output_nodes=list(record.output_ids),
+                        support_nodes=support_nodes,
+                        metadata={
+                            "event_id": record.event_id,
+                            **dict(record.metadata),
+                        },
+                    )
+                )
+
+        if memristor_integration is not None:
+            records.append(
+                HyperedgeCandidateRecord(
+                    edge_type="memristor_modulation_relation",
+                    input_nodes=[memristor_integration.expression_id] if memristor_integration.expression_id else [],
+                    output_nodes=[memristor_integration.map_id],
+                    support_nodes=[f"{q},{r}" for q, r in memristor_integration.modulation_sites],
+                    metadata={
+                        "integration_id": memristor_integration.integration_id,
+                        "target_domain": memristor_integration.target_domain,
+                        **dict(memristor_integration.metadata),
+                    },
+                )
+            )
+
+        if causal_graph_index is not None:
+            for dependency in causal_graph_index.records:
+                if dependency.dependency_type == "startup_order":
+                    records.append(
+                        HyperedgeCandidateRecord(
+                            edge_type="startup_causal_segment",
+                            input_nodes=[dependency.cause_event_id],
+                            output_nodes=[dependency.effect_event_id],
+                            support_nodes=[],
+                            metadata={
+                                "dependency_id": dependency.dependency_id,
+                                "dependency_type": dependency.dependency_type,
+                            },
+                        )
+                    )
+                elif dependency.dependency_type == "oxfoi_expression_application":
+                    records.append(
+                        HyperedgeCandidateRecord(
+                            edge_type="oxfoi_causal_segment",
+                            input_nodes=[dependency.cause_event_id],
+                            output_nodes=[dependency.effect_event_id],
+                            support_nodes=[
+                                str(dependency.metadata.get("expression_id", "")),
+                                str(dependency.metadata.get("displacement_kind", "")),
+                            ],
+                            metadata={
+                                "dependency_id": dependency.dependency_id,
+                                "dependency_type": dependency.dependency_type,
+                                **dict(dependency.metadata),
+                            },
+                        )
+                    )
+                elif dependency.dependency_type == "triton_instruction_application":
+                    records.append(
+                        HyperedgeCandidateRecord(
+                            edge_type="triton_causal_segment",
+                            input_nodes=[dependency.cause_event_id],
+                            output_nodes=[dependency.effect_event_id],
+                            support_nodes=[
+                                str(dependency.metadata.get("instruction_id", "")),
+                                str(dependency.metadata.get("instruction_kind", "")),
+                            ],
+                            metadata={
+                                "dependency_id": dependency.dependency_id,
+                                "dependency_type": dependency.dependency_type,
+                                **dict(dependency.metadata),
+                            },
+                        )
+                    )
+
         return {self.output_key: HypergraphCandidateIndex(records=records)}
 
 
@@ -1162,9 +2322,51 @@ class BuildProductionPointerNode(DagNode):
             for record in hypergraph_index.records
             if record.edge_type == "recursive_generation" and current_state.state_id in record.input_nodes
         ]
+        startup_checkpoint_edges = [
+            record for record in hypergraph_index.records if record.edge_type == "startup_checkpoint_relation"
+        ]
+        startup_causal_edges = [
+            record for record in hypergraph_index.records if record.edge_type == "startup_causal_segment"
+        ]
+        oxfoi_expression_edges = [
+            record for record in hypergraph_index.records if record.edge_type == "oxfoi_expression_relation"
+        ]
+        oxfoi_transition_edges = [
+            record for record in hypergraph_index.records if record.edge_type == "oxfoi_transition_relation"
+        ]
+        oxfoi_causal_edges = [
+            record for record in hypergraph_index.records if record.edge_type == "oxfoi_causal_segment"
+        ]
+        triton_instruction_edges = [
+            record for record in hypergraph_index.records if record.edge_type == "triton_instruction_relation"
+        ]
+        triton_execution_edges = [
+            record for record in hypergraph_index.records if record.edge_type == "triton_execution_relation"
+        ]
+        triton_causal_edges = [
+            record for record in hypergraph_index.records if record.edge_type == "triton_causal_segment"
+        ]
+        memristor_modulation_edges = [
+            record for record in hypergraph_index.records if record.edge_type == "memristor_modulation_relation"
+        ]
         next_edge_types = sorted({record.edge_type for record in hypergraph_index.records})
         ranked_outputs: list[dict[str, Any]] = []
         seen_outputs: set[str] = set()
+        startup_alignment_score = len(startup_checkpoint_edges) + len(startup_causal_edges)
+        oxfoi_alignment_score = len(oxfoi_expression_edges) + len(oxfoi_transition_edges) + len(oxfoi_causal_edges)
+        triton_alignment_score = len(triton_instruction_edges) + len(triton_execution_edges) + len(triton_causal_edges)
+        memristor_alignment_score = max(
+            len(memristor_modulation_edges),
+            int(
+                round(
+                    sum(
+                        float(record.metadata.get("loop_density", 0.0)) * float(record.metadata.get("modulated_site_count", 0))
+                        + float(record.metadata.get("relaxation_projection_score", 0.0))
+                        for record in memristor_modulation_edges
+                    )
+                )
+            ),
+        )
         for record in sorted(
             generated_edges,
             key=lambda edge: (
@@ -1185,6 +2387,10 @@ class BuildProductionPointerNode(DagNode):
                         "topples": int(record.metadata.get("topples", 0)),
                         "signature": str(record.metadata.get("signature", "")),
                         "branch": list(record.metadata.get("branch", [])),
+                        "startup_alignment": startup_alignment_score,
+                        "oxfoi_alignment": oxfoi_alignment_score,
+                        "triton_alignment": triton_alignment_score,
+                        "memristor_alignment": memristor_alignment_score,
                     }
                 )
         preferred_output = ranked_outputs[0]["state_id"] if ranked_outputs else None
@@ -1196,6 +2402,13 @@ class BuildProductionPointerNode(DagNode):
         can_descend = current_state.lineage_depth < recursion_limit
         ray_id = f"ray_{_pointer_digest(str(chain.states[0].image_path), current_state.state_id, rewrite_rule_name)}"
         pointer_id = f"pp_{_pointer_digest(ray_id, current_state.signature, preferred_output or '')}"
+        target_confidence = min(
+            1.0,
+            0.04 * startup_alignment_score
+            + 0.03 * oxfoi_alignment_score
+            + 0.02 * triton_alignment_score
+            + 0.01 * memristor_alignment_score,
+        )
 
         pointer = ProductionPointerRecord(
             pointer_id=pointer_id,
@@ -1215,16 +2428,29 @@ class BuildProductionPointerNode(DagNode):
                 "current_depth": current_state.lineage_depth,
                 "depth_remaining": max(0, recursion_limit - current_state.lineage_depth),
                 "has_generated_children": bool(generated_edges),
+                "startup_alignment_score": startup_alignment_score,
+                "oxfoi_alignment_score": oxfoi_alignment_score,
+                "triton_alignment_score": triton_alignment_score,
+                "memristor_alignment_score": memristor_alignment_score,
                 "ray_locked": True,
             },
             target_domain="supersingular_isogeny",
-            target_confidence=0.0,
+            target_confidence=target_confidence,
             metadata={
                 "signature": current_signature,
                 "branch": list(current_state.branch),
                 "chain_length": len(chain.states),
                 "hyperedge_count": len(hypergraph_index.records),
                 "stem_root_state_id": chain.states[0].state_id,
+                "startup_checkpoint_relation_count": len(startup_checkpoint_edges),
+                "startup_causal_segment_count": len(startup_causal_edges),
+                "oxfoi_expression_relation_count": len(oxfoi_expression_edges),
+                "oxfoi_transition_relation_count": len(oxfoi_transition_edges),
+                "oxfoi_causal_segment_count": len(oxfoi_causal_edges),
+                "triton_instruction_relation_count": len(triton_instruction_edges),
+                "triton_execution_relation_count": len(triton_execution_edges),
+                "triton_causal_segment_count": len(triton_causal_edges),
+                "memristor_modulation_relation_count": len(memristor_modulation_edges),
             },
         )
         manifest_path = workspace.root / "runs" / f"{pointer.pointer_id}.json"
@@ -1237,6 +2463,18 @@ class RegularSandpileStatePipeline(Dag):
         super().__init__(
             nodes=[
                 ProjectConfigurationToImageNode(),
+            ]
+        )
+
+
+class StartupMachinePipeline(Dag):
+    def __init__(self) -> None:
+        super().__init__(
+            nodes=[
+                BuildInitializationVectorRecordNode(),
+                BuildStartupSequenceNode(),
+                BuildStartupEventIndexNode(),
+                BuildCausalGraphIndexNode(),
             ]
         )
 
