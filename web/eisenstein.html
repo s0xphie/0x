@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Triangular Eisenstein Sandpile – Dual Layer</title>
+<style>
+  body {
+    margin: 0;
+    background: #05060a;
+    color: #e6e6f0;
+    font-family: system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  #topbar {
+    padding: 8px 12px;
+    background: #0b0d14;
+    border-bottom: 1px solid #222633;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    font-size: 13px;
+  }
+  #topbar button {
+    background: #1b2133;
+    color: #e6e6f0;
+    border: 1px solid #30384a;
+    border-radius: 4px;
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  #topbar button:hover {
+    background: #252d42;
+  }
+  #topbar label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  #topbar input[type="text"] {
+    width: 260px;
+    background: #121728;
+    color: #e6e6f0;
+    border: 1px solid #30384a;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  #topbar input[type="range"] {
+    width: 120px;
+  }
+  #container {
+    flex: 1;
+    display: flex;
+    background: #05060a;
+    overflow: hidden;
+  }
+  #canvas-wrapper {
+    margin: auto;
+    transform-origin: top left;
+  }
+  canvas {
+    display: block;
+    background: #05060a;
+  }
+  #status {
+    padding: 4px 10px;
+    font-size: 11px;
+    color: #9aa0b8;
+    background: #05060a;
+    border-top: 1px solid #222633;
+  }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <button id="btnAddCenter">Add @ Center</button>
+  <button id="btnAddCorners">Add @ Corners</button>
+  <button id="btnCycleCorners">Cycle Corners</button>
+  <button id="btnCornerLoop">Corner Loop</button>
+  <button id="btnFlood">Flood Center Cross</button>
+  <button id="btnPrimePulse">Prime Pulse</button>
+  <button id="btnFillLoop">Fill Loop</button>
+  <button id="btnDivisibleMode">Divisible: Glow</button>
+  <label>Program
+    <input id="programInput" type="text" value="1234 4321" spellcheck="false">
+  </label>
+  <button id="btnApplyProgram">Apply Program</button>
+  <button id="btnProgramLoop">Program Loop</button>
+  <button id="btnRelaxOnce">Relax Once</button>
+  <button id="btnRelaxBurst">Relax ×1000</button>
+  <button id="btnRelaxStable">Relax Until Stable</button>
+  <button id="btnPlay">Play / Pause</button>
+  <label>Zoom
+    <input id="zoomSlider" type="range" min="50" max="250" value="100">
+  </label>
+</div>
+
+<div id="container">
+  <div id="canvas-wrapper">
+    <canvas id="sandCanvas"></canvas>
+  </div>
+</div>
+
+<div id="status">Ready.</div>
+
+<script>
+(() => {
+  // ============================================================
+  //  GRID + PHYSICS PARAMETERS
+  // ============================================================
+  const N = 89;
+  const THRESHOLD = 6;
+  const MASS_THRESHOLD = 1.0;
+  const MASS_EPS = 1e-4;
+  const CENTER = Math.floor(N / 2);
+
+  // ============================================================
+  //  PERFECT EQUILATERAL TRIANGLE GEOMETRY (TS2)
+  // ============================================================
+  const SIDE = 24;
+  const HALF_SIDE = SIDE / 2;
+  const TRI_H = SIDE * Math.sqrt(3) / 2;
+  const GRID_PADDING = 16;
+  const LATTICE_WIDTH = SIDE + (N - 1) * HALF_SIDE;
+  const LATTICE_HEIGHT = N * TRI_H;
+  const CANVAS_WIDTH = Math.ceil(LATTICE_WIDTH + GRID_PADDING * 2);
+  const CANVAS_HEIGHT = Math.ceil(LATTICE_HEIGHT + GRID_PADDING * 2);
+  const GRID_OFFSET_X = (CANVAS_WIDTH - LATTICE_WIDTH) / 2;
+  const GRID_OFFSET_Y = (CANVAS_HEIGHT - LATTICE_HEIGHT) / 2;
+  const FILL_BATCH = 24;
+  const CORNER_LOOP_BATCH = 6;
+  const RELAX_BATCH = 180;
+  const FRAME_BUDGET_MS = 10;
+  const DIVISIBLE_ALPHA = 0.7545;
+  const PROGRAM_RELAX_BATCH = 240;
+  const CORNER_DEPTH = 5;
+
+  // Map each lattice cell to the left corner of its triangle's bounding box.
+  // A triangular tiling advances by half a side horizontally, not a full side.
+  function cellToPixel(q, r) {
+    const px = GRID_OFFSET_X + q * HALF_SIDE;
+    const py = GRID_OFFSET_Y + r * TRI_H;
+    return [px, py];
+  }
+
+  function makeTrianglePath(q, r) {
+    const [px, py] = cellToPixel(q, r);
+    const up = ((q + r) & 1) === 0;
+    const path = new Path2D();
+
+    if (up) {
+      path.moveTo(px, py + TRI_H);
+      path.lineTo(px + HALF_SIDE, py);
+      path.lineTo(px + SIDE, py + TRI_H);
+    } else {
+      path.moveTo(px, py);
+      path.lineTo(px + SIDE, py);
+      path.lineTo(px + HALF_SIDE, py + TRI_H);
+    }
+    path.closePath();
+
+    return path;
+  }
+
+  // ============================================================
+  //  CANVAS SETUP
+  // ============================================================
+  const canvas = document.getElementById('sandCanvas');
+  const wrapper = document.getElementById('canvas-wrapper');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const programInput = document.getElementById('programInput');
+  const trianglePaths = [];
+  const triangleCenters = [];
+
+  canvas.width = CANVAS_WIDTH;
+  canvas.height = CANVAS_HEIGHT;
+
+  // zoom
+  const zoomSlider = document.getElementById('zoomSlider');
+  function updateZoom() {
+    wrapper.style.transform = `scale(${zoomSlider.value / 100})`;
+  }
+  zoomSlider.addEventListener('input', updateZoom);
+  updateZoom();
+
+  // ============================================================
+  //  STATE ARRAYS
+  // ============================================================
+  const height = [];
+  const mass = [];
+  const topplingBuffer = [];
+
+  for (let y = 0; y < N; y++) {
+    height[y] = new Array(N).fill(0);
+    mass[y] = new Array(N).fill(0);
+    topplingBuffer[y] = new Array(N).fill(0);
+    trianglePaths[y] = new Array(N);
+    triangleCenters[y] = new Array(N);
+    for (let x = 0; x < N; x++) {
+      trianglePaths[y][x] = makeTrianglePath(x, y);
+      const [px, py] = cellToPixel(x, y);
+      const up = ((x + y) & 1) === 0;
+      triangleCenters[y][x] = [
+        px + HALF_SIDE,
+        py + (up ? (2 * TRI_H) / 3 : TRI_H / 3)
+      ];
+    }
+  }
+
+  // ============================================================
+  //  NEIGHBORS (AXIAL / EISENSTEIN)
+  // ============================================================
+  const neighborOffsets = [
+    [ 1,  0],
+    [-1,  0],
+    [ 0,  1],
+    [ 0, -1],
+    [ 1, -1],
+    [-1,  1]
+  ];
+
+  function axialDistance(dq, dr) {
+    return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr));
+  }
+
+  function verifyNeighborModel() {
+    const uniqueOffsets = new Set(neighborOffsets.map(([dq, dr]) => `${dq},${dr}`));
+    const allUnitSteps = neighborOffsets.every(([dq, dr]) => axialDistance(dq, dr) === 1);
+    const balanced = neighborOffsets.reduce(
+      (acc, [dq, dr]) => [acc[0] + dq, acc[1] + dr],
+      [0, 0]
+    );
+    const hasOpposites = neighborOffsets.every(([dq, dr]) =>
+      uniqueOffsets.has(`${-dq},${-dr}`)
+    );
+
+    return uniqueOffsets.size === 6
+      && allUnitSteps
+      && balanced[0] === 0
+      && balanced[1] === 0
+      && hasOpposites;
+  }
+
+  const neighborModelOk = verifyNeighborModel();
+  if (!neighborModelOk) {
+    console.warn('Neighbor offsets are not a consistent Eisenstein unit neighborhood.');
+  }
+
+  const latticeOrder = buildLatticeOrder();
+
+  function buildLatticeOrder() {
+    const cells = [];
+
+    for (let r = 0; r < N; r++) {
+      for (let q = 0; q < N; q++) {
+        const aq = q - CENTER;
+        const ar = r - CENTER;
+        const distance = axialDistance(aq, ar);
+        const angle = Math.atan2(TRI_H * ar, HALF_SIDE * aq);
+        cells.push({ q, r, distance, angle });
+      }
+    }
+
+    cells.sort((a, b) => {
+      if (a.distance !== b.distance) return a.distance - b.distance;
+      if (a.angle !== b.angle) return a.angle - b.angle;
+      if (a.r !== b.r) return a.r - b.r;
+      return a.q - b.q;
+    });
+
+    return cells;
+  }
+
+  function inBounds(i, j) {
+    return i >= 0 && i < N && j >= 0 && j < N;
+  }
+
+  // ============================================================
+  //  DISCRETE SANDPILE RELAXATION
+  // ============================================================
+  function relaxDiscreteStep() {
+    let changed = false;
+
+    for (let y = 0; y < N; y++)
+      for (let x = 0; x < N; x++)
+        topplingBuffer[y][x] = 0;
+
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        if (height[y][x] >= THRESHOLD) {
+          const toppleCount = Math.floor(height[y][x] / THRESHOLD);
+          if (toppleCount > 0) {
+            changed = true;
+            topplingBuffer[y][x] -= toppleCount * THRESHOLD;
+            for (const [dx, dy] of neighborOffsets) {
+              const nx = x + dx;
+              const ny = y + dy;
+              if (inBounds(nx, ny)) topplingBuffer[ny][nx] += toppleCount;
+            }
+          }
+        }
+      }
+    }
+
+    if (changed) {
+      for (let y = 0; y < N; y++)
+        for (let x = 0; x < N; x++)
+          height[y][x] += topplingBuffer[y][x];
+    }
+
+    return changed;
+  }
+
+  // ============================================================
+  //  DIVISIBLE SANDPILE RELAXATION (opacity glow)
+  // ============================================================
+  function relaxMassStep() {
+    let changed = false;
+    const delta = [];
+
+    for (let y = 0; y < N; y++)
+      delta[y] = new Array(N).fill(0);
+
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        if (mass[y][x] > MASS_THRESHOLD + MASS_EPS) {
+          const excess = mass[y][x] - MASS_THRESHOLD;
+          changed = true;
+          delta[y][x] -= excess;
+          const share = excess / neighborOffsets.length;
+          for (const [dx, dy] of neighborOffsets) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (inBounds(nx, ny)) delta[ny][nx] += share;
+          }
+        }
+      }
+    }
+
+    if (changed) {
+      for (let y = 0; y < N; y++)
+        for (let x = 0; x < N; x++)
+          mass[y][x] += delta[y][x];
+    }
+
+    return changed;
+  }
+
+  function relaxOnce() {
+    return relaxDiscreteStep() || relaxMassStep();
+  }
+
+  function relaxBurst(iter = 1000) {
+    let steps = 0;
+    for (let k = 0; k < iter; k++) {
+      if (!relaxOnce()) break;
+      steps++;
+    }
+    return steps;
+  }
+
+  function relaxUntilStable(maxIter = 200000) {
+    let steps = 0;
+    while (steps < maxIter && relaxOnce()) steps++;
+    return steps;
+  }
+
+  // ============================================================
+  //  COLOR MAPS
+  // ============================================================
+  function heightColor(h) {
+    const v = ((h % THRESHOLD) + THRESHOLD) % THRESHOLD;
+    switch (v) {
+      case 0: return '#05060a';
+      case 1: return '#2b4cff';
+      case 2: return '#1fbf75';
+      case 3: return '#f2c14f';
+      case 4: return '#f26b38';
+      case 5: return '#d93aff';
+      default: return '#ffffff';
+    }
+  }
+
+  const LEVEL_RGB = [
+    [5, 6, 10],
+    [43, 76, 255],
+    [31, 191, 117],
+    [242, 193, 79],
+    [242, 107, 56],
+    [217, 58, 255]
+  ];
+
+  function lerp(a, b, t) {
+    return a + (b - a) * t;
+  }
+
+  function interpolateLevelColor(position) {
+    const wrapped = ((position % THRESHOLD) + THRESHOLD) % THRESHOLD;
+    const index = Math.floor(wrapped);
+    const nextIndex = (index + 1) % THRESHOLD;
+    const localT = wrapped - index;
+    const a = LEVEL_RGB[index];
+    const b = LEVEL_RGB[nextIndex];
+
+    return [
+      Math.round(lerp(a[0], b[0], localT)),
+      Math.round(lerp(a[1], b[1], localT)),
+      Math.round(lerp(a[2], b[2], localT))
+    ];
+  }
+
+  function rgbString([r, g, b], alpha = 1) {
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function massOverlayStyle(m) {
+    const t = ((m % 1) + 1) % 1;
+    const palettePosition = t * THRESHOLD;
+    const rgb = interpolateLevelColor(palettePosition);
+    const edgeFade = Math.min(
+      Math.max((t - 0.08) / 0.12, 0),
+      1,
+      Math.max((0.92 - t) / 0.12, 0)
+    );
+    const alpha = DIVISIBLE_ALPHA * edgeFade;
+
+    return {
+      t,
+      palettePosition,
+      rgb,
+      alpha,
+      color: rgbString(rgb, alpha)
+    };
+  }
+
+  function drawGlowOverlay(path, style) {
+    if (style.alpha <= 0) return;
+    ctx.strokeStyle = style.color;
+    ctx.lineWidth = 1.2;
+    ctx.stroke(path);
+  }
+
+  // ============================================================
+  //  DRAWING
+  // ============================================================
+  function draw(now = performance.now()) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.lineWidth = 1.2;
+    ctx.lineJoin = "miter";
+    ctx.miterLimit = 1;
+
+    for (let r = 0; r < N; r++) {
+      for (let q = 0; q < N; q++) {
+        const path = trianglePaths[r][q];
+        ctx.fillStyle = heightColor(height[r][q]);
+        ctx.fill(path);
+
+        if (divisibleEdgesVisible) {
+          const style = massOverlayStyle(mass[r][q]);
+          drawGlowOverlay(path, style);
+        }
+      }
+    }
+  }
+
+  // ============================================================
+  //  INJECTION HELPERS
+  // ============================================================
+  function addAt(i, j, amount = 1, massAmount = 0.0) {
+    if (!inBounds(i, j)) return;
+    height[j][i] += amount;
+    mass[j][i] += massAmount;
+  }
+
+  function addCenter(amount = 1, massAmount = 0.0) {
+    addAt(CENTER, CENTER, amount, massAmount);
+  }
+
+  function cornerSites() {
+    return [
+      [0, 0],
+      [N - 1, 0],
+      [0, N - 1],
+      [N - 1, N - 1]
+    ];
+  }
+
+  function addCornerPatch(cornerIndex, amount = 1, massAmount = 0.0, depth = CORNER_DEPTH) {
+    for (let a = 0; a <= depth; a++) {
+      for (let b = 0; b <= depth - a; b++) {
+        let i = a;
+        let j = b;
+
+        if (cornerIndex === 1) i = N - 1 - a;
+        if (cornerIndex === 2) j = N - 1 - b;
+        if (cornerIndex === 3) {
+          i = N - 1 - a;
+          j = N - 1 - b;
+        }
+
+        const weight = depth - (a + b) + 1;
+        addAt(i, j, amount * weight, massAmount * weight);
+      }
+    }
+  }
+
+  function addCorners(amount = 1, massAmount = 0.0, depth = CORNER_DEPTH) {
+    for (let cornerIndex = 0; cornerIndex < cornerSites().length; cornerIndex++) {
+      addCornerPatch(cornerIndex, amount, massAmount, depth);
+    }
+  }
+
+  let cornerCycleIndex = 0;
+
+  function addNextCorner(amount = 1, massAmount = 0.0, depth = CORNER_DEPTH) {
+    const corners = cornerSites();
+    const currentIndex = cornerCycleIndex;
+    const [i, j] = corners[currentIndex];
+    addCornerPatch(currentIndex, amount, massAmount, depth);
+    cornerCycleIndex = (cornerCycleIndex + 1) % corners.length;
+    return [i, j, currentIndex];
+  }
+
+  function addCenterCross(amount = 1, massAmount = 0.0) {
+    const r = 3;
+    for (let d = -r; d <= r; d++) {
+      addAt(CENTER + d, CENTER, amount, massAmount);
+      addAt(CENTER, CENTER + d, amount, massAmount);
+    }
+  }
+
+  // ============================================================
+  //  PRIME PULSE (simple injection)
+  // ============================================================
+  function primePulse() {
+    addAt(CENTER, CENTER, 6, 1.0);
+  }
+
+  function fillPulse() {
+    for (let k = 0; k < FILL_BATCH; k++) {
+      primePulse();
+    }
+  }
+
+  function cycleCornerPulse(batch = CORNER_LOOP_BATCH, amount = 2, massAmount = 0.35) {
+    for (let k = 0; k < batch; k++) {
+      addNextCorner(amount, massAmount);
+    }
+  }
+
+  function parseProgramGroups(source) {
+    return source
+      .split(/[\s,;|]+/)
+      .map((group) => group.replace(/[^0-9]/g, ''))
+      .filter((group) => group.length > 0);
+  }
+
+  function applyProgramGroup(group) {
+    const limit = Math.min(group.length, latticeOrder.length);
+
+    for (let i = 0; i < limit; i++) {
+      const grains = Number(group[i]);
+      if (grains <= 0) continue;
+
+      const cell = latticeOrder[i];
+      addAt(cell.q, cell.r, grains, 0.0);
+    }
+
+    return limit;
+  }
+
+  // ============================================================
+  //  UI CONTROLS
+  // ============================================================
+  const btnAddCenter = document.getElementById('btnAddCenter');
+  const btnAddCorners = document.getElementById('btnAddCorners');
+  const btnCycleCorners = document.getElementById('btnCycleCorners');
+  const btnCornerLoop = document.getElementById('btnCornerLoop');
+  const btnFlood = document.getElementById('btnFlood');
+  const btnPrimePulse = document.getElementById('btnPrimePulse');
+  const btnFillLoop = document.getElementById('btnFillLoop');
+  const btnDivisibleMode = document.getElementById('btnDivisibleMode');
+  const btnApplyProgram = document.getElementById('btnApplyProgram');
+  const btnProgramLoop = document.getElementById('btnProgramLoop');
+  const btnRelaxOnce = document.getElementById('btnRelaxOnce');
+  const btnRelaxBurst = document.getElementById('btnRelaxBurst');
+  const btnRelaxStable = document.getElementById('btnRelaxStable');
+  const btnPlay = document.getElementById('btnPlay');
+  let divisibleEdgesVisible = true;
+
+  function updateDivisibleModeLabel() {
+    btnDivisibleMode.textContent = divisibleEdgesVisible ? 'Divisible: Edge On' : 'Divisible: Edge Off';
+  }
+
+  btnAddCenter.addEventListener('click', () => {
+    addCenter(6, 1.0);
+    draw();
+  });
+
+  btnAddCorners.addEventListener('click', () => {
+    addCorners(2, 0.35);
+    statusEl.textContent = `Added tapered corner wedges at all four corners (depth ${CORNER_DEPTH}).`;
+    draw();
+  });
+
+  btnCycleCorners.addEventListener('click', () => {
+    const [i, j] = addNextCorner(2, 0.35);
+    statusEl.textContent = `Added tapered corner wedge near (${i}, ${j}) (depth ${CORNER_DEPTH}).`;
+    draw();
+  });
+
+  btnCornerLoop.addEventListener('click', () => {
+    cornerLooping = !cornerLooping;
+    btnCornerLoop.classList.toggle('active', cornerLooping);
+    statusEl.textContent = cornerLooping ? 'Corner loop running.' : 'Corner loop paused.';
+  });
+
+  btnFlood.addEventListener('click', () => {
+    addCenterCross(3, 0.5);
+    draw();
+  });
+
+  btnPrimePulse.addEventListener('click', () => {
+    primePulse();
+    draw();
+  });
+
+  btnDivisibleMode.addEventListener('click', () => {
+    divisibleEdgesVisible = !divisibleEdgesVisible;
+    updateDivisibleModeLabel();
+    btnDivisibleMode.classList.toggle('active', divisibleEdgesVisible);
+    statusEl.textContent = divisibleEdgesVisible
+      ? 'Divisible edge colors are visible.'
+      : 'Divisible edge colors are hidden.';
+    draw();
+  });
+
+  let filling = false;
+  let cornerLooping = false;
+  let programLooping = false;
+  let activeProgramGroups = [];
+  let activeProgramIndex = 0;
+  let programPendingGroups = 0;
+  let programSettling = false;
+
+  function refreshProgramStateFromInput() {
+    activeProgramGroups = parseProgramGroups(programInput.value);
+    activeProgramIndex = 0;
+    programPendingGroups = 0;
+    programSettling = false;
+    return activeProgramGroups.length;
+  }
+
+  function startProgramRun(looping) {
+    const count = refreshProgramStateFromInput();
+    if (count === 0) return false;
+
+    programLooping = looping;
+    programPendingGroups = looping ? 0 : count;
+    programSettling = false;
+    btnProgramLoop.classList.toggle('active', programLooping);
+    return true;
+  }
+
+  btnRelaxOnce.addEventListener('click', () => {
+    const changed = relaxOnce();
+    statusEl.textContent = changed ? 'Relaxed one step.' : 'Already stable.';
+    draw();
+  });
+
+  btnRelaxBurst.addEventListener('click', () => {
+    const steps = relaxBurst(1000);
+    statusEl.textContent = `Relax burst: ${steps} steps.`;
+    draw();
+  });
+
+  btnRelaxStable.addEventListener('click', () => {
+    const steps = relaxUntilStable();
+    statusEl.textContent = `Relaxed until stable in ${steps} steps.`;
+    draw();
+  });
+
+  let playing = false;
+
+  function loop(now) {
+    if (playing || filling || cornerLooping || programLooping || programPendingGroups > 0) {
+      const frameStart = performance.now();
+      let relaxSteps = 0;
+      let fillSteps = 0;
+      let cornerSteps = 0;
+      let programApplied = '';
+      let changed = false;
+
+      while (performance.now() - frameStart < FRAME_BUDGET_MS) {
+        if ((programLooping || programPendingGroups > 0) && !programSettling) {
+          if (activeProgramGroups.length === 0) {
+            refreshProgramStateFromInput();
+          }
+          if (activeProgramGroups.length === 0) {
+            programLooping = false;
+            programPendingGroups = 0;
+            btnProgramLoop.classList.remove('active');
+            break;
+          }
+
+          const group = activeProgramGroups[activeProgramIndex];
+          applyProgramGroup(group);
+          activeProgramIndex = (activeProgramIndex + 1) % activeProgramGroups.length;
+          if (programPendingGroups > 0) {
+            programPendingGroups--;
+          }
+          programSettling = true;
+          programApplied = group;
+          changed = true;
+        }
+
+        if (filling) {
+          fillPulse();
+          fillSteps += FILL_BATCH;
+        }
+
+        if (cornerLooping) {
+          cycleCornerPulse();
+          cornerSteps += CORNER_LOOP_BATCH;
+          changed = true;
+        }
+
+        let localChanged = false;
+        const batchSize = programSettling ? PROGRAM_RELAX_BATCH : RELAX_BATCH;
+        for (let k = 0; k < batchSize; k++) {
+          if (!relaxOnce()) break;
+          localChanged = true;
+          relaxSteps++;
+        }
+
+        changed = changed || localChanged;
+        if (programSettling && !localChanged) {
+          programSettling = false;
+          if (!filling && !playing && !programLooping && programPendingGroups === 0) break;
+          continue;
+        }
+        if (!filling && !localChanged && !programLooping && programPendingGroups === 0) break;
+      }
+
+      draw(now);
+
+      const parts = [];
+      if (filling) parts.push(`fill ${fillSteps}`);
+      if (cornerLooping) parts.push(`corners ${cornerSteps}`);
+      if (programApplied) parts.push(`program ${programApplied}`);
+      if ((programLooping || programPendingGroups > 0) && programSettling) parts.push('settling');
+      if (programPendingGroups > 0) parts.push(`remaining ${programPendingGroups}`);
+      if (playing || relaxSteps > 0) parts.push(`relax ${relaxSteps}`);
+      if (!changed && !filling && playing) parts.push('stable');
+      statusEl.textContent = parts.length > 0 ? parts.join(' | ') : 'Idle.';
+    } else {
+      draw(now);
+    }
+    requestAnimationFrame(loop);
+  }
+
+  btnPlay.addEventListener('click', () => {
+    playing = !playing;
+    btnPlay.classList.toggle('active', playing);
+    statusEl.textContent = playing ? 'Playing (auto-relax).' : 'Paused.';
+  });
+
+  btnFillLoop.addEventListener('click', () => {
+    filling = !filling;
+    btnFillLoop.classList.toggle('active', filling);
+    statusEl.textContent = filling ? 'Fill loop running.' : 'Fill loop paused.';
+  });
+
+  btnApplyProgram.addEventListener('click', () => {
+    if (!startProgramRun(false)) {
+      statusEl.textContent = 'Program is empty.';
+      return;
+    }
+    statusEl.textContent = `Applying ${activeProgramGroups.length} program group(s).`;
+  });
+
+  btnProgramLoop.addEventListener('click', () => {
+    if (programLooping) {
+      programLooping = false;
+      btnProgramLoop.classList.remove('active');
+      statusEl.textContent = 'Program loop paused.';
+      return;
+    }
+
+    if (!startProgramRun(true)) {
+      statusEl.textContent = 'Program is empty.';
+      return;
+    }
+    statusEl.textContent = 'Program loop running.';
+  });
+
+  programInput.addEventListener('input', () => {
+    refreshProgramStateFromInput();
+  });
+
+  // ============================================================
+  //  INITIAL STATE
+  // ============================================================
+  updateDivisibleModeLabel();
+  refreshProgramStateFromInput();
+  addCenterCross(4, 1.0);
+  relaxBurst(5000);
+  draw();
+  requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

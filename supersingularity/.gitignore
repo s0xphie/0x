@@ -1,6 +1,5 @@
-workspace/state_tree/
-workspace/runs/
-workspace/canonical_states/
+0x/
+.runtime/
 workspace/__pycache__/
 __pycache__/
 *.pyc

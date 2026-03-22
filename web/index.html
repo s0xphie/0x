@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sandpile Simulation</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background:#111; color:#eee; margin:0; padding:1rem; display:flex; gap:1rem; }
+    textarea { width: 100%; height: 260px; background:#000; color:#0f0; font-family: monospace; font-size: 11px; }
+    #left, #right { flex:1; min-width:0; }
+    canvas { border:1px solid #444; image-rendering: pixelated; background:#000; }
+    pre { background:#000; color:#ccc; padding:0.5rem; overflow:auto; max-height:400px; font-size:9px; }
+    button { margin-right:0.5rem; margin-top:0.5rem; }
+    .row { margin-bottom:0.5rem; }
+    #status { margin-top:0.5rem; font-size:0.9rem; color:#aaa; }
+  </style>
+</head>
+<body>
+  <div id="left">
+    <div class="row">
+      <strong>PGM input (P2, 32×32)</strong>
+    </div>
+    <textarea id="pgmInput"></textarea>
+    <div class="row">
+      <button id="initBtn">Init from PGM</button>
+      <button id="stepBtn">Step</button>
+      <button id="autoBtn">Auto: off</button>
+    </div>
+    <div id="status">No state loaded.</div>
+    <div class="row">
+      <strong>ASCII view</strong>
+    </div>
+    <pre id="ascii"></pre>
+  </div>
+
+  <div id="right">
+    <div class="row">
+      <strong>Canvas view</strong>
+    </div>
+    <canvas id="canvas" width="320" height="320"></canvas>
+  </div>
+
+<script>
+const SIZE = 32;
+const THRESHOLD = 4;
+
+let state = null;
+let stepIndex = 0;
+let auto = false;
+let autoTimer = null;
+
+function parsePGM(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0 && !l.startsWith('#'));
+  if (lines[0] !== 'P2') throw new Error('Not P2');
+  const [w, h] = lines[1].split(/\s+/).map(Number);
+  if (w !== SIZE || h !== SIZE) throw new Error(`Expected ${SIZE}x${SIZE}, got ${w}x${h}`);
+  const maxval = parseInt(lines[2], 10);
+  if (isNaN(maxval)) throw new Error('Bad maxval');
+  const nums = lines.slice(3).join(' ').split(/\s+/).filter(Boolean).map(Number);
+  if (nums.length !== SIZE * SIZE) throw new Error(`Expected ${SIZE*SIZE} pixels, got ${nums.length}`);
+  const grid = [];
+  for (let y = 0; y < SIZE; y++) {
+    grid.push(nums.slice(y*SIZE, (y+1)*SIZE));
+  }
+  return grid;
+}
+
+function cloneGrid(g) {
+  return g.map(row => row.slice());
+}
+
+function addGrainCenter(g) {
+  const ng = cloneGrid(g);
+  const c = Math.floor(SIZE / 2);
+  ng[c][c] += 1;
+  return ng;
+}
+
+function stabilize(g) {
+  const ng = cloneGrid(g);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let y = 0; y < SIZE; y++) {
+      for (let x = 0; x < SIZE; x++) {
+        if (ng[y][x] >= THRESHOLD) {
+          changed = true;
+          ng[y][x] -= THRESHOLD;
+          if (x > 0) ng[y][x-1] += 1;
+          if (x < SIZE-1) ng[y][x+1] += 1;
+          if (y > 0) ng[y-1][x] += 1;
+          if (y < SIZE-1) ng[y+1][x] += 1;
+        }
+      }
+    }
+  }
+  return ng;
+}
+
+function successor(g) {
+  return stabilize(addGrainCenter(g));
+}
+
+function valueToColor(v) {
+  const c = Math.max(0, Math.min(3, v));
+  const palette = [
+    [20, 20, 20],
+    [80, 200, 120],
+    [200, 200, 80],
+    [220, 80, 80]
+  ];
+  return palette[c];
+}
+
+function renderCanvas(g) {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const scale = canvas.width / SIZE;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (let y = 0; y < SIZE; y++) {
+    for (let x = 0; x < SIZE; x++) {
+      const [r, gcol, b] = valueToColor(g[y][x]);
+      ctx.fillStyle = `rgb(${r},${gcol},${b})`;
+      ctx.fillRect(x * scale, y * scale, scale, scale);
+    }
+  }
+}
+
+function renderAscii(g) {
+  const chars = ['.', '1', '2', '3', '+', '*', '#', '@'];
+  let out = '';
+  for (let y = 0; y < SIZE; y++) {
+    let row = '';
+    for (let x = 0; x < SIZE; x++) {
+      const v = g[y][x];
+      const c = v < chars.length ? chars[v] : chars[chars.length - 1];
+      row += c;
+    }
+    out += row + '\n';
+  }
+  document.getElementById('ascii').textContent = out;
+}
+
+function updateView() {
+  if (!state) return;
+  renderCanvas(state);
+  renderAscii(state);
+  const idxStr = `${stepIndex} (0x${stepIndex.toString(16)})`;
+  document.getElementById('status').textContent = `Current step: ${idxStr}`;
+}
+
+document.getElementById('initBtn').onclick = () => {
+  try {
+    const text = document.getElementById('pgmInput').value;
+    state = parsePGM(text);
+    stepIndex = 0;
+    updateView();
+  } catch (e) {
+    alert('Init error: ' + e.message);
+  }
+};
+
+document.getElementById('stepBtn').onclick = () => {
+  if (!state) return;
+  state = successor(state);
+  stepIndex += 1;
+  updateView();
+};
+
+document.getElementById('autoBtn').onclick = () => {
+  auto = !auto;
+  document.getElementById('autoBtn').textContent = 'Auto: ' + (auto ? 'on' : 'off');
+  if (auto) {
+    autoTimer = setInterval(() => {
+      if (!state) return;
+      state = successor(state);
+      stepIndex += 1;
+      updateView();
+    }, 200);
+  } else {
+    clearInterval(autoTimer);
+  }
+};
+
+// Prefill with your 0x08 example
+document.getElementById('pgmInput').value =
+`P2
+32 32
+3
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 1 3 0 2 3 3 3 2 0 3 1 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 1 3 2 2 3 3 1 3 1 3 3 2 2 3 1 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 2 1 3 2 2 2 1 3 0 3 1 2 2 2 3 1 2 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 2 3 3 1 2 3 3 2 2 1 2 2 3 3 2 1 3 3 2 0 0 0 0 0 0
+0 0 0 0 0 0 2 3 0 2 3 2 1 3 3 2 2 2 3 3 1 2 3 2 0 3 2 0 0 0 0 0
+0 0 0 0 0 1 1 3 2 2 2 1 1 3 1 1 3 1 1 3 1 1 2 2 2 3 1 1 0 0 0 0
+0 0 0 0 0 3 3 1 3 2 2 3 1 2 3 2 3 2 3 2 1 3 2 2 3 1 3 3 0 0 0 0
+0 0 0 0 1 2 2 2 2 1 3 2 3 3 3 3 0 3 3 3 3 2 3 1 2 2 2 2 1 0 0 0
+0 0 0 0 3 2 2 3 1 1 1 3 0 3 2 2 1 2 2 3 0 3 1 1 1 3 2 2 3 0 0 0
+0 0 0 1 0 3 2 3 3 3 2 3 3 2 2 3 3 3 2 2 3 3 2 3 3 3 2 3 0 1 0 0
+0 0 0 1 2 3 1 2 3 1 3 3 2 2 0 3 3 3 0 2 2 3 3 1 3 2 1 3 2 1 0 0
+0 0 0 1 3 1 3 2 2 1 2 3 2 3 3 2 3 2 3 3 2 3 2 1 2 2 3 1 3 1 0 0
+0 0 0 1 3 3 0 1 2 3 3 0 1 3 3 3 0 3 3 3 1 0 3 3 2 1 0 3 3 1 0 0
+0 0 0 1 3 1 3 2 2 1 2 3 2 3 3 2 3 2 3 3 2 3 2 1 2 2 3 1 3 1 0 0
+0 0 0 1 2 3 1 2 3 1 3 3 2 2 0 3 3 3 0 2 2 3 3 1 3 2 1 3 2 1 0 0
+0 0 0 1 0 3 2 3 3 3 2 3 3 2 2 3 3 3 2 2 3 3 2 3 3 3 2 3 0 1 0 0
+0 0 0 0 3 2 2 3 1 1 1 3 0 3 2 2 1 2 2 3 0 3 1 1 1 3 2 2 3 0 0 0
+0 0 0 0 1 2 2 2 2 1 3 2 3 3 3 3 0 3 3 3 3 2 3 1 2 2 2 2 1 0 0 0
+0 0 0 0 0 3 3 1 3 2 2 3 1 2 3 2 3 2 3 2 1 3 2 2 3 1 3 3 0 0 0 0
+0 0 0 0 0 1 1 3 2 2 2 1 1 3 1 1 3 1 1 3 1 1 2 2 2 3 1 1 0 0 0 0
+0 0 0 0 0 0 2 3 0 2 3 2 1 3 3 2 2 2 3 3 1 2 3 2 0 3 2 0 0 0 0 0
+0 0 0 0 0 0 0 2 3 3 1 2 3 3 2 2 1 2 2 3 3 2 1 3 3 2 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 2 1 3 2 2 2 1 3 0 3 1 2 2 2 3 1 2 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 1 3 2 2 3 3 1 3 1 3 3 2 2 3 1 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 1 3 0 2 3 3 3 2 0 3 1 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0`;
+</script>
+</body>
+</html>
