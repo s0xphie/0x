@@ -14,6 +14,7 @@ class NetpbmImage:
     height: int
     pixels: list[list[int]]
     max_value: int = 1
+    comments: list[str] | None = None  # optional comment lines
 
     def __post_init__(self) -> None:
         if self.magic not in SUPPORTED_MAGIC:
@@ -25,7 +26,13 @@ class NetpbmImage:
 
 
 def read_netpbm(path: str | Path) -> NetpbmImage:
-    tokens = _tokenize(Path(path).read_text(encoding="utf-8"))
+    content = Path(path).read_text(encoding="utf-8")
+    comments = []
+    for line in content.splitlines():
+        if line.strip().startswith("#"):
+            comments.append(line.strip())
+    
+    tokens = _tokenize(content)
     if not tokens:
         raise ValueError("empty Netpbm file")
 
@@ -52,11 +59,15 @@ def read_netpbm(path: str | Path) -> NetpbmImage:
         height=height,
         pixels=pixels,
         max_value=max_value,
+        comments=comments if comments else None,
     )
 
 
 def write_netpbm(image: NetpbmImage, path: str | Path) -> None:
-    lines = [image.magic, f"{image.width} {image.height}"]
+    lines = []
+    if image.comments:
+        lines.extend(image.comments)
+    lines.extend([image.magic, f"{image.width} {image.height}"])
     if image.magic == "P2":
         lines.append(str(image.max_value))
     lines.extend(" ".join(str(value) for value in row) for row in image.pixels)

@@ -22,6 +22,11 @@ class ImageStateSurface:
     def to_path(self, path: str | Path) -> None:
         write_netpbm(self.image, path)
 
+    def with_comments(self, comments: list[str]) -> "ImageStateSurface":
+        """Return a new surface with added PGM comments."""
+        self.image.comments = comments
+        return self
+
     def read_value(self, x: int, y: int) -> int:
         return self.image.pixels[y][x]
 
@@ -279,7 +284,19 @@ class SimulationWorkspace:
         state_id_override: str | None = None,
         parent: ArchivedState | None = None,
         canonicalize: bool = False,
+        scope: int = 8,  # recursion period for comment insertion
     ) -> ArchivedState:
+        """Archive a sandpile surface to disk as a PGM file.
+        
+        At every `scope` recursion levels (multiples of lineage_depth),
+        metadata comments are embedded in the PGM file. This enables
+        lightweight tracking of state identity and genealogy without
+        additional files or image formats like PNG.
+        
+        Args:
+            scope: Recursion interval for comment insertion (default 8,
+                   derived from seed_chips/root_label in the 0x/ tree).
+        """
         normalized_branch = tuple(str(part) for part in branch)
         state_id = state_id_override or surface_state_id(surface)
         signature = surface_signature(surface)
@@ -288,10 +305,27 @@ class SimulationWorkspace:
             directory = self.root / "state_tree" / state_label
             for part in normalized_branch:
                 directory = directory / part
+            lineage_depth = 0
         else:
             directory = parent.directory / state_label
+            lineage_depth = parent.lineage_depth + 1
+        
         directory.mkdir(parents=True, exist_ok=True)
         image_path = directory / f"{state_label}.pgm"
+        
+        # Add comments at SCOPE intervals (every `scope` recursions)
+        if lineage_depth > 0 and lineage_depth % scope == 0:
+            comments = [
+                f"# scope_depth={lineage_depth}",
+                f"# scope_interval={scope}",
+                f"# state_id={state_id}",
+                f"# signature={signature}",
+                f"# topples={topples}",
+            ]
+            if parent is not None:
+                comments.append(f"# parent_id={parent.state_id}")
+            surface.with_comments(comments)
+        
         if canonicalize:
             canonical_path = self.canonical_state_path(signature)
             if canonical_path.exists():
@@ -301,6 +335,7 @@ class SimulationWorkspace:
                 shutil.copyfile(image_path, canonical_path)
         else:
             surface.to_path(image_path)
+        
         return ArchivedState(
             state_id=state_id,
             signature=signature,
@@ -309,7 +344,7 @@ class SimulationWorkspace:
             image_path=image_path,
             topples=topples,
             parent_state_id=parent.state_id if parent is not None else None,
-            lineage_depth=parent.lineage_depth + 1 if parent is not None else 0,
+            lineage_depth=lineage_depth,
         )
 
     def spawn_child_state(
@@ -321,6 +356,7 @@ class SimulationWorkspace:
         max_depth: int = 16,
         state_id_override: str | None = None,
         canonicalize: bool = False,
+        scope: int = 8,
     ) -> ArchivedState:
         if len(parent.branch) >= max_depth:
             raise ValueError(f"maximum archive depth {max_depth} reached")
@@ -333,6 +369,7 @@ class SimulationWorkspace:
             state_id_override=state_id_override,
             parent=parent,
             canonicalize=canonicalize,
+            scope=scope,
         )
 
     def canonical_state_path(self, signature: str) -> Path:

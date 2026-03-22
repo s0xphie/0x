@@ -4,6 +4,7 @@ Use this file when an agent is asked to "scope the singularity" or re-scope the 
 
 Startup reading order
 
+0. `SPEC.md`
 1. `README.md`
 2. `ALIGNMENT.md`
 3. `ARCHITECTURE.md`

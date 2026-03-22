@@ -39,6 +39,31 @@ from .ternlsb import (
     TernLSBExecutionRecord,
     TernLSBProgram,
 )
+from .engine import (
+    BoundaryEdge,
+    EdgeKind,
+    GlyphNode,
+    Hypergraph,
+    HyperedgeRecord as EngineHyperedgeRecord,
+    IffClass,
+    IffResult,
+    NodeClass,
+    Scope,
+    StateNode,
+    TreeIndex,
+    WorkspaceScope,
+    build_hypergraph,
+    classify_checkpoint_children,
+    decode_surface_glyphs,
+    derive_scope,
+    extract_boundary_potential,
+    find_spine,
+    map_scopes,
+    parse_ox_tree,
+    parse_pgm_comments,
+    parse_workspace_scopes,
+    summarize_hypergraph,
+)
 
 
 DagContext = dict[str, Any]
@@ -1181,6 +1206,240 @@ class BuildProductionPointerNode(DagNode):
         return {self.output_key: pointer, self.manifest_key: manifest_path}
 
 
+# ---------------------------------------------------------------------------
+# Engine bridge nodes: wrap engine.py functions as DagNode subclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ParseOxTreeNode(DagNode):
+    """Parse the 0x/ filesystem tree into a TreeIndex."""
+
+    def __init__(
+        self,
+        ox_root_key: str = "ox_root",
+        output_key: str = "ox_tree_index",
+        spine_key: str = "ox_spine",
+    ):
+        super().__init__(
+            name="parse_ox_tree",
+            inputs=[ox_root_key],
+            outputs=[output_key, spine_key],
+        )
+        self.ox_root_key = ox_root_key
+        self.output_key = output_key
+        self.spine_key = spine_key
+
+    def run(self, context: DagContext) -> DagContext:
+        ox_root = Path(context[self.ox_root_key])
+        index = parse_ox_tree(ox_root)
+        spine = find_spine(index)
+        return {self.output_key: index, self.spine_key: spine}
+
+
+@dataclass
+class DeriveScopeNode(DagNode):
+    """Derive scope from the 0x/ tree."""
+
+    def __init__(
+        self,
+        ox_root_key: str = "ox_root",
+        output_key: str = "scope",
+    ):
+        super().__init__(
+            name="derive_scope",
+            inputs=[ox_root_key],
+            outputs=[output_key],
+        )
+        self.ox_root_key = ox_root_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        ox_root = Path(context[self.ox_root_key])
+        scope = derive_scope(ox_root)
+        return {self.output_key: scope}
+
+
+@dataclass
+class ClassifyCheckpointNode(DagNode):
+    """Classify children at the checkpoint using iff semantics."""
+
+    def __init__(
+        self,
+        ox_tree_key: str = "ox_tree_index",
+        output_key: str = "iff_results",
+    ):
+        super().__init__(
+            name="classify_checkpoint",
+            inputs=[ox_tree_key],
+            outputs=[output_key],
+        )
+        self.ox_tree_key = ox_tree_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        index: TreeIndex = context[self.ox_tree_key]
+        results = classify_checkpoint_children(index)
+        return {self.output_key: results}
+
+
+@dataclass
+class ParseWorkspaceScopesNode(DagNode):
+    """Parse the workspace/ scope group."""
+
+    def __init__(
+        self,
+        workspace_key: str = "workspace",
+        output_key: str = "workspace_scopes",
+    ):
+        super().__init__(
+            name="parse_workspace_scopes",
+            inputs=[workspace_key],
+            outputs=[output_key],
+        )
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        scopes = parse_workspace_scopes(workspace.root)
+        return {self.output_key: scopes}
+
+
+@dataclass
+class MapCrossScopeNode(DagNode):
+    """Map 0x/ checkpoint children to workspace scopes."""
+
+    def __init__(
+        self,
+        ox_tree_key: str = "ox_tree_index",
+        ws_scopes_key: str = "workspace_scopes",
+        iff_key: str = "iff_results",
+        output_key: str = "cross_scope_map",
+    ):
+        super().__init__(
+            name="map_cross_scope",
+            inputs=[ox_tree_key, ws_scopes_key, iff_key],
+            outputs=[output_key],
+        )
+        self.ox_tree_key = ox_tree_key
+        self.ws_scopes_key = ws_scopes_key
+        self.iff_key = iff_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        index: TreeIndex = context[self.ox_tree_key]
+        ws_scopes: list[WorkspaceScope] = context[self.ws_scopes_key]
+        iff_results: list[IffResult] = context[self.iff_key]
+        mapping = map_scopes(index, ws_scopes, iff_results)
+        return {self.output_key: mapping}
+
+
+@dataclass
+class BuildUnifiedHypergraphNode(DagNode):
+    """Build the unified hypergraph from 0x/ and workspace/ trees."""
+
+    def __init__(
+        self,
+        ox_root_key: str = "ox_root",
+        workspace_key: str = "workspace",
+        output_key: str = "unified_hypergraph",
+        summary_key: str = "hypergraph_summary",
+    ):
+        super().__init__(
+            name="build_unified_hypergraph",
+            inputs=[ox_root_key, workspace_key],
+            outputs=[output_key, summary_key],
+        )
+        self.ox_root_key = ox_root_key
+        self.workspace_key = workspace_key
+        self.output_key = output_key
+        self.summary_key = summary_key
+
+    def run(self, context: DagContext) -> DagContext:
+        ox_root = Path(context[self.ox_root_key])
+        workspace: SimulationWorkspace = context[self.workspace_key]
+        hg = build_hypergraph(ox_root, workspace.root)
+        summary = summarize_hypergraph(hg)
+        return {self.output_key: hg, self.summary_key: summary}
+
+
+@dataclass
+class EnrichProductionPointerNode(DagNode):
+    """Enrich a production pointer with engine scope and iff data."""
+
+    def __init__(
+        self,
+        pointer_key: str = "production_pointer",
+        scope_key: str = "scope",
+        iff_key: str = "iff_results",
+        cross_scope_key: str = "cross_scope_map",
+        output_key: str = "enriched_production_pointer",
+    ):
+        super().__init__(
+            name="enrich_production_pointer",
+            inputs=[pointer_key, scope_key, iff_key, cross_scope_key],
+            outputs=[output_key],
+        )
+        self.pointer_key = pointer_key
+        self.scope_key = scope_key
+        self.iff_key = iff_key
+        self.cross_scope_key = cross_scope_key
+        self.output_key = output_key
+
+    def run(self, context: DagContext) -> DagContext:
+        pointer: ProductionPointerRecord = context[self.pointer_key]
+        scope: Scope = context[self.scope_key]
+        iff_results: list[IffResult] = context[self.iff_key]
+        cross_scope: dict[str, list[str]] = context[self.cross_scope_key]
+
+        explorable = [r for r in iff_results if r.iff_class == IffClass.EXPLORABLE]
+        collapsed = [r for r in iff_results if r.iff_class == IffClass.COLLAPSED]
+        absorbed = [r for r in iff_results if r.iff_class == IffClass.ABSORBED]
+
+        enriched = ProductionPointerRecord(
+            pointer_id=pointer.pointer_id,
+            ray_id=pointer.ray_id,
+            stem_path=pointer.stem_path,
+            current_state_id=pointer.current_state_id,
+            canonical_path=pointer.canonical_path,
+            rewrite_rule=pointer.rewrite_rule,
+            recursion_depth=pointer.recursion_depth,
+            recursion_limit=pointer.recursion_limit,
+            can_descend=pointer.can_descend,
+            next_edge_types=pointer.next_edge_types,
+            allowed_outputs_ranked=pointer.allowed_outputs_ranked,
+            preferred_output=pointer.preferred_output,
+            safety_bounds=pointer.safety_bounds,
+            target_domain=pointer.target_domain,
+            target_confidence=pointer.target_confidence,
+            metadata={
+                **pointer.metadata,
+                "engine_scope": {
+                    "period": scope.period,
+                    "seed_chips": scope.seed_chips,
+                    "root_label": scope.root_label,
+                    "singularity": scope.singularity,
+                },
+                "engine_iff": {
+                    "explorable": [r.address for r in explorable],
+                    "collapsed": len(collapsed),
+                    "absorbed": len(absorbed),
+                    "total": len(iff_results),
+                },
+                "engine_cross_scope": {
+                    addr: targets for addr, targets in cross_scope.items()
+                },
+            },
+        )
+        return {self.output_key: enriched}
+
+
+# ---------------------------------------------------------------------------
+# Pipelines
+# ---------------------------------------------------------------------------
+
+
 class RegularSandpileStatePipeline(Dag):
     def __init__(self) -> None:
         super().__init__(
@@ -1250,6 +1509,63 @@ class RecursiveStateTreePipeline(Dag):
                 BuildCausalGraphIndexNode(),
                 BuildHypergraphCandidateIndexNode(),
                 BuildProductionPointerNode(),
+            ]
+        )
+
+
+class UnifiedEnginePipeline(Dag):
+    """Unified pipeline: parses 0x/ tree, derives scope, classifies iff,
+    maps workspace scopes, and builds the unified hypergraph.
+
+    Seed context must provide:
+      - ox_root: str | Path  — path to 0x/ directory
+      - workspace: SimulationWorkspace
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            nodes=[
+                ParseOxTreeNode(),
+                DeriveScopeNode(),
+                ClassifyCheckpointNode(),
+                ParseWorkspaceScopesNode(),
+                MapCrossScopeNode(),
+                BuildUnifiedHypergraphNode(),
+            ]
+        )
+
+
+class FullUnifiedPipeline(Dag):
+    """Chains the engine tree analysis with the workspace recursive pipeline
+    and enriches the production pointer with scope/iff data.
+
+    Seed context must provide:
+      - ox_root: str | Path
+      - workspace: SimulationWorkspace
+      - stem_path: str | Path
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            nodes=[
+                # Phase 1: Engine — parse 0x/ tree, derive scope, classify
+                ParseOxTreeNode(),
+                DeriveScopeNode(),
+                ClassifyCheckpointNode(),
+                ParseWorkspaceScopesNode(),
+                MapCrossScopeNode(),
+                BuildUnifiedHypergraphNode(),
+                # Phase 2: Workspace — review chain, generate, dedup, index
+                ReviewArchivedStateChainNode(),
+                GenerateRecursiveSubtreeNode(),
+                DeduplicateStateTreeNode(),
+                BuildCanonicalStateIndexNode(),
+                BuildUpdateEventIndexNode(),
+                BuildCausalGraphIndexNode(),
+                BuildHypergraphCandidateIndexNode(),
+                BuildProductionPointerNode(),
+                # Phase 3: Enrich pointer with engine data
+                EnrichProductionPointerNode(),
             ]
         )
 
