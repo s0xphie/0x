@@ -1,0 +1,357 @@
+openapi: 3.0.3
+info:
+  title: Sandpile–BCT–Isogeny Model Context Protocol (MCP) API
+  version: "0.1.1"
+  description: |
+    MCP for the Sandpile–BCT–Isogeny architecture. State objects are
+    addressable nodes in the /0x/ recursion lattice. The API exposes
+    deterministic initialization, canonical successor (step), traversal (goto),
+    invariant tests (iff), projection lenses, and validation.
+servers:
+  - url: https://mcp.example.org/api/v1
+    description: Example MCP server
+
+# (paths unchanged from prior draft; omitted here for brevity in this patch view)
+paths:
+  /state/{address}:
+    get:
+      summary: Get canonical State by 0x address
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "0x/0x10/0x01/0x02/0x03/0x04/0x05/0x06/0x07/0x08"
+      responses:
+        '200':
+          description: Canonical State object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/State'
+  /init:
+    post:
+      summary: Deterministic stabilization / init from seed under a scope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seed, scope]
+              properties:
+                seed:
+                  type: string
+                  example: "0x80"
+                scope:
+                  type: string
+                  example: "default"
+      responses:
+        '201':
+          description: Created canonical State from seed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/State'
+  /step:
+    post:
+      summary: Apply canonical successor function to a State
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              properties:
+                state:
+                  $ref: '#/components/schemas/State'
+                options:
+                  type: object
+                  properties:
+                    apply_warp:
+                      type: boolean
+                      default: false
+      responses:
+        '200':
+          description: New State after atomic step
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    $ref: '#/components/schemas/State'
+                  validation:
+                    $ref: '#/components/schemas/ValidationReport'
+  /goto:
+    post:
+      summary: Traverse a named successor edge (filesystem / isogeny / successor)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state, edge_id]
+              properties:
+                state:
+                  $ref: '#/components/schemas/State'
+                edge_id:
+                  type: string
+      responses:
+        '200':
+          description: Destination State
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/State'
+  /iff:
+    post:
+      summary: Evaluate named invariant predicate on a State
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state, invariant_id]
+              properties:
+                state:
+                  $ref: '#/components/schemas/State'
+                invariant_id:
+                  type: string
+      responses:
+        '200':
+          description: Predicate result with witness
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: boolean
+                  witness:
+                    type: object
+  /project:
+    post:
+      summary: Render a local neighborhood using a projection lens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state, lens]
+              properties:
+                state:
+                  $ref: '#/components/schemas/State'
+                lens:
+                  type: string
+                  enum: ["pgm","hex_address","glyph_stream","isogeny_coordinate","octal_projection","rule30_slice"]
+      responses:
+        '200':
+          description: Lens view
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lens:
+                    type: string
+                  view:
+                    type: object
+  /validate_state:
+    post:
+      summary: Run full invariant suite on a State
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/State'
+      responses:
+        '200':
+          description: Validation report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationReport'
+
+components:
+  schemas:
+    State:
+      type: object
+      required:
+        - address
+        - z_index
+        - period_phase
+        - q
+        - r
+        - w
+        - sandpile
+        - production_pointer
+      properties:
+        address:
+          type: string
+        z_index:
+          type: integer
+        period_phase:
+          type: integer
+        q:
+          type: string
+        r:
+          type: string
+        w:
+          type: integer
+        prime_registers:
+          type: object
+          additionalProperties:
+            type: integer
+        sandpile:
+          type: object
+          required: [format,path,width,height,checksum]
+          properties:
+            format: { type: string, example: "pgm" }
+            path: { type: string, example: "0x08.pgm" }
+            width: { type: integer, example: 32 }
+            height: { type: integer, example: 32 }
+            checksum: { type: string, example: "sha256:abcdef..." }
+        glyph_stream:
+          type: array
+          items: { type: string }
+        interval_family_id:
+          type: string
+        interval_validity:
+          type: string
+          enum: ["interior-valid","mixed-interior","all-interior-invalid"]
+        boundary_potential_map:
+          type: string
+        production_pointer:
+          type: object
+          required: [ray,bounds]
+          properties:
+            ray: { type: string }
+            bounds:
+              type: object
+              properties:
+                start: { type: string }
+                end: { type: string }
+        active_scope:
+          type: string
+        relation_classes:
+          type: array
+          items: { type: string }
+        isogeny_class:
+          type: object
+          properties:
+            curve_id: { type: string }
+            j_invariant: { type: string }
+            # isogeny_path is explicitly NOT treated as sensitive in this revision
+            isogeny_path: { type: string, description: "Compact isogeny walk descriptor (not sensitive by policy)" }
+        singularity_ref:
+          type: string
+        stabilization_path:
+          type: array
+          items: { type: string }
+        meta:
+          type: object
+          additionalProperties: { type: string }
+
+    ValidationReport:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        issues:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              message: { type: string }
+              witness: { type: object }
+        provenance:
+          type: object
+          properties:
+            created_by: { type: string }
+            commit: { type: string }
+
+  responses:
+    NotFound:
+      description: Address not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: "NotFound" }
+              message: { type: string, example: "Address not present in 0x tree" }
+    ChecksumMismatch:
+      description: PGM checksum mismatch
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: "ChecksumMismatch" }
+              expected: { type: string }
+              actual: { type: string }
+    InvalidIntervalPartition:
+      description: Interval partitioning invalid for this slice
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: "InvalidIntervalPartition" }
+              details: { type: string }
+    InvariantViolation:
+      description: Transition would violate declared invariants
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: "InvariantViolation" }
+              violations:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    code: { type: string }
+                    message: { type: string }
+    NonDeterministicTransition:
+      description: Transition produced non-deterministic result
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: "NonDeterministicTransition" }
+              details: { type: string }
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-MCP-API-Key
+
+tags:
+  - name: state
+    description: State retrieval and canonicalization
+  - name: execution
+    description: step/goto/iff/init operations
+  - name: projection
+    description: rendering and compressed views
+
+x-notes:
+  - "Updated: isogeny_path descriptors are NOT treated as sensitive by policy; they are compact walk descriptors and may be returned by project/get_state responses."
+  - "Provenance and checksum requirements remain mandatory: isogeny descriptors must still be accompanied by provenance (meta.created_by, meta.commit) and the sandpile PGM must include checksum."
+  - "Non-negotiable constraints: determinism from seed+scope+meta; do not conflate image adjacency with isogeny adjacency; do not materialize full successor graph; preserve provenance and checksums."
+  - "Examples use canonical addresses: 0x/0x10/.../0x08, 0x80 (seed), 0x2a (canonical stabilization)."
